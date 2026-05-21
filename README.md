@@ -323,6 +323,35 @@ Production deployment includes:
 - Environment-based configuration
 - Secure credential handling
 - Scalable cloud-hosted infrastructure
+## Demo Account
+
+Email: demo@test.com
+Password: Demo123
+
+## Technical Decisions
+
+### Server-side payment calculation
+Payment totals are calculated on the backend rather than trusting frontend values. This prevents users from manipulating prices through browser tools.
+
+### Secure payment architecture
+Legacy client-submitted payment amounts were removed and replaced with server-generated Stripe/Braintree payment flows.
+
+### Security measures
+- Helmet security headers
+- Rate limiting on authentication endpoints
+- Input sanitisation
+- MongoDB sanitisation
+- JWT authentication
+- CORS restrictions
+- Environment variables for secrets
+
+### Security validation:
+- Tested client-side cart tampering through localStorage
+- Backend rejected invalid quantity changes through inventory validation
+- Backend ignored manipulated frontend prices and used trusted server-side product values
+
+### Tradeoffs
+LocalStorage is used for cart persistence to provide a simple user experience without introducing additional database complexity for anonymous users.
 
 ## Technical Challenges
 
