@@ -380,3 +380,29 @@ The project uses environment variables for credentials, server-side validation f
 
 ### Trade-offs
 Moving payment logic to the backend adds complexity, more API handling, and extra error states to manage, but it creates a safer and more maintainable checkout flow. For a commerce application, this trade-off is necessary because payment integrity matters more than frontend simplicity.
+
+
+## Roadmap
+
+### Completed
+
+- [x] React single-page application
+- [x] Product catalogue and shopping cart
+- [x] Persistent cart storage
+- [x] User authentication
+- [x] Stripe integration
+- [x] Braintree integration
+- [x] Cloud deployment
+
+### In Progress
+
+- [ ] Expand automated unit and integration testing
+- [ ] Improve interface design and accessibility
+
+### Planned
+
+- [ ] Dockerise application services
+- [ ] Add CI/CD with GitHub Actions
+- [ ] Introduce TypeScript
+- [ ] Add monitoring and observability
+- [ ] Review architecture for increased traffic
