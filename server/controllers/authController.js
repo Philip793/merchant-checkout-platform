@@ -7,12 +7,11 @@ const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MINUTES = 5;
 const ATTEMPT_WINDOW_MINUTES = 5;
 
-// Security-critical configuration - no fallbacks allowed
+// Security-critical configuration
 const JWT_SECRET = process.env.JWT_SECRET;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
-// Validate required environment variables
 if (!JWT_SECRET) {
   throw new Error(
     "Missing JWT_SECRET environment variable. " +
@@ -20,20 +19,28 @@ if (!JWT_SECRET) {
   );
 }
 
-// Admin initialization - requires explicit credentials (no fallbacks)
-// Set ADMIN_EMAIL and ADMIN_PASSWORD in .env to auto-create admin on startup
-// Export this function to be called after DB connection is established
+/*
+ * Initialize admin account if credentials
+ * have been explicitly configured.
+ */
 export const initAdmin = async () => {
   if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
     console.log(
-      "ℹ️  Admin credentials not set (ADMIN_EMAIL, ADMIN_PASSWORD) - skipping auto-initialization",
+      "ℹ️ Admin credentials not set (ADMIN_EMAIL, ADMIN_PASSWORD) - skipping auto-initialization",
     );
-    console.log("   To create an admin, set both variables in your .env file");
+
+    console.log(
+      "To create an admin, set both variables in your .env file",
+    );
+
     return;
   }
 
   try {
-    const adminExists = await User.findOne({ email: ADMIN_EMAIL });
+    const adminExists = await User.findOne({
+      email: ADMIN_EMAIL,
+    });
+
     if (!adminExists) {
       await User.create({
         name: "Admin",
@@ -41,305 +48,527 @@ export const initAdmin = async () => {
         password: ADMIN_PASSWORD,
         role: "admin",
       });
-      console.log("✅ Admin user initialized in database");
+
+      console.log(
+        "✅ Admin user initialized in database",
+      );
     }
   } catch (error) {
-    console.error("❌ Failed to initialize admin:", error.message);
+    console.error(
+      "❌ Failed to initialize admin:",
+      error.message,
+    );
   }
 };
 
 const JWT_EXPIRES_IN = "7d";
 
+/*
+ * Public user object returned to frontend.
+ */
 const normalizeUser = (user) => ({
+  id: user._id.toString(),
   email: user.email,
   name: user.name,
   role: user.role,
   shippingAddress: user.shippingAddress,
 });
 
-const normalizeShippingAddress = (address = {}) => {
+const normalizeShippingAddress = (
+  address = {},
+) => {
   return {
-    fullName: String(address.fullName || "").trim(),
-    street: String(address.street || "").trim(),
-    city: String(address.city || "").trim(),
-    state: String(address.state || "").trim(),
-    zip: String(address.zip || "").trim(),
-    country: String(address.country || "AU")
+    fullName: String(
+      address.fullName || "",
+    ).trim(),
+
+    street: String(
+      address.street || "",
+    ).trim(),
+
+    city: String(
+      address.city || "",
+    ).trim(),
+
+    state: String(
+      address.state || "",
+    ).trim(),
+
+    zip: String(
+      address.zip || "",
+    ).trim(),
+
+    country: String(
+      address.country || "AU",
+    )
       .trim()
       .toUpperCase(),
-    phone: String(address.phone || "").trim(),
+
+    phone: String(
+      address.phone || "",
+    ).trim(),
   };
 };
 
-const validateShippingAddress = (address) => {
-  const requiredFields = ["fullName", "street", "city", "state", "zip"];
-  const missing = requiredFields.filter((field) => !address[field]);
+const validateShippingAddress = (
+  address,
+) => {
+  const requiredFields = [
+    "fullName",
+    "street",
+    "city",
+    "state",
+    "zip",
+  ];
+
+  const missing =
+    requiredFields.filter(
+      (field) => !address[field],
+    );
 
   if (missing.length > 0) {
-    return `Missing shipping address fields: ${missing.join(", ")}`;
+    return `Missing shipping address fields: ${missing.join(
+      ", ",
+    )}`;
   }
 
-  if (!["AU", "US"].includes(address.country)) {
+  if (
+    !["AU", "US"].includes(
+      address.country,
+    )
+  ) {
     return "Shipping country must be Australia or United States";
   }
 
   return null;
 };
 
-/**
- * Generate JWT token
+/*
+ * Generate JWT.
+ *
+ * userId is the security-critical addition.
  */
 const generateToken = (user) => {
   return jwt.sign(
     {
+      userId: user._id.toString(),
       email: user.email,
       role: user.role,
       name: user.name,
     },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN },
+    {
+      expiresIn: JWT_EXPIRES_IN,
+    },
   );
 };
 
-/**
- * Register a new customer
+/*
+ * Register customer.
  */
-export const register = async (req, res) => {
+export const register = async (
+  req,
+  res,
+) => {
   try {
-    const { email, password, name } = req.body;
+    const {
+      email,
+      password,
+      name,
+    } = req.body;
 
-    // Validation
-    if (!email || !password || !name) {
+    if (
+      !email ||
+      !password ||
+      !name
+    ) {
       return res.status(400).json({
         success: false,
-        error: "Email, password, and name are required",
+        error:
+          "Email, password, and name are required",
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        error: "Password must be at least 6 characters",
+        error:
+          "Password must be at least 6 characters",
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser =
+      await User.findOne({
+        email,
+      });
+
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        error: "User already exists",
+        error:
+          "User already exists",
       });
     }
 
-    // Create user (password will be hashed by the pre-save hook)
-    const user = await User.create({
-      email,
-      password,
-      name,
-      role: "user",
-    });
+    const user =
+      await User.create({
+        email,
+        password,
+        name,
+        role: "user",
+      });
 
-    // Generate token
-    const token = generateToken(user);
+    const token =
+      generateToken(user);
 
-    console.log(`✅ New customer registered: ${email}`);
+    console.log(
+      `✅ New customer registered: ${email}`,
+    );
 
     res.status(201).json({
       success: true,
-      message: "User registered successfully",
+
+      message:
+        "User registered successfully",
+
       token,
-      user: normalizeUser(user),
+
+      user:
+        normalizeUser(user),
     });
   } catch (error) {
-    console.error("Registration error:", error);
+    console.error(
+      "Registration error:",
+      error,
+    );
+
     res.status(500).json({
       success: false,
-      error: "Registration failed",
+      error:
+        "Registration failed",
     });
   }
 };
 
-/**
- * Get client IP address
+/*
+ * Get client IP.
  */
 const getClientIP = (req) => {
   return (
     req.ip ||
-    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-    req.connection?.remoteAddress ||
+    req.headers[
+      "x-forwarded-for"
+    ]
+      ?.split(",")[0]
+      ?.trim() ||
+    req.connection
+      ?.remoteAddress ||
     "unknown"
   );
 };
 
-/**
- * Check if account is locked
+/*
+ * Determine whether an account
+ * is currently locked.
  */
-const isAccountLocked = async (email, ipAddress) => {
-  const record = await LoginAttempt.findOne({ email });
+const isAccountLocked = async (
+  email,
+  ipAddress,
+) => {
+  const record =
+    await LoginAttempt.findOne({
+      email,
+    });
 
-  if (!record) return { locked: false };
+  if (!record) {
+    return {
+      locked: false,
+    };
+  }
 
-  // Check if currently locked
-  if (record.lockoutUntil && record.lockoutUntil > new Date()) {
-    const remainingMinutes = Math.ceil(
-      (record.lockoutUntil - new Date()) / (1000 * 60),
-    );
+  if (
+    record.lockoutUntil &&
+    record.lockoutUntil >
+      new Date()
+  ) {
+    const remainingMinutes =
+      Math.ceil(
+        (record.lockoutUntil -
+          new Date()) /
+          (1000 * 60),
+      );
+
     return {
       locked: true,
       remainingMinutes,
-      message: `Account locked. Try again in ${remainingMinutes} minute(s).`,
+
+      message:
+        `Account locked. Try again in ${remainingMinutes} minute(s).`,
     };
   }
 
-  // Check if within attempt window and max attempts reached
-  const windowStart = new Date(Date.now() - ATTEMPT_WINDOW_MINUTES * 60 * 1000);
+  const windowStart =
+    new Date(
+      Date.now() -
+        ATTEMPT_WINDOW_MINUTES *
+          60 *
+          1000,
+    );
 
   if (
-    record.lastAttempt > windowStart &&
-    record.attempts >= MAX_FAILED_ATTEMPTS
+    record.lastAttempt >
+      windowStart &&
+    record.attempts >=
+      MAX_FAILED_ATTEMPTS
   ) {
-    // Lock the account
-    record.lockoutUntil = new Date(
-      Date.now() + LOCKOUT_DURATION_MINUTES * 60 * 1000,
-    );
+    record.lockoutUntil =
+      new Date(
+        Date.now() +
+          LOCKOUT_DURATION_MINUTES *
+            60 *
+            1000,
+      );
+
     await record.save();
 
     return {
       locked: true,
-      remainingMinutes: LOCKOUT_DURATION_MINUTES,
-      message: `Account locked due to ${MAX_FAILED_ATTEMPTS} failed attempts. Try again in ${LOCKOUT_DURATION_MINUTES} minutes.`,
+
+      remainingMinutes:
+        LOCKOUT_DURATION_MINUTES,
+
+      message:
+        `Account locked due to ${MAX_FAILED_ATTEMPTS} failed attempts. ` +
+        `Try again in ${LOCKOUT_DURATION_MINUTES} minutes.`,
     };
   }
 
-  // Reset if outside window
-  if (record.lastAttempt <= windowStart) {
+  if (
+    record.lastAttempt <=
+    windowStart
+  ) {
     record.attempts = 0;
-    record.lockoutUntil = null;
+    record.lockoutUntil =
+      null;
+
     await record.save();
   }
 
-  return { locked: false };
+  return {
+    locked: false,
+  };
 };
 
-/**
- * Record failed login attempt
+/*
+ * Record failed login attempt.
  */
-const recordFailedAttempt = async (email, ipAddress) => {
-  const record = await LoginAttempt.findOneAndUpdate(
-    { email },
-    {
-      $inc: { attempts: 1 },
-      $set: {
-        lastAttempt: new Date(),
-        ipAddress,
+const recordFailedAttempt = async (
+  email,
+  ipAddress,
+) => {
+  const record =
+    await LoginAttempt.findOneAndUpdate(
+      {
+        email,
       },
-    },
-    { upsert: true, new: true },
-  );
 
-  // Check if we just hit the limit
-  if (record.attempts >= MAX_FAILED_ATTEMPTS) {
-    record.lockoutUntil = new Date(
-      Date.now() + LOCKOUT_DURATION_MINUTES * 60 * 1000,
+      {
+        $inc: {
+          attempts: 1,
+        },
+
+        $set: {
+          lastAttempt:
+            new Date(),
+
+          ipAddress,
+        },
+      },
+
+      {
+        upsert: true,
+        new: true,
+      },
     );
+
+  if (
+    record.attempts >=
+    MAX_FAILED_ATTEMPTS
+  ) {
+    record.lockoutUntil =
+      new Date(
+        Date.now() +
+          LOCKOUT_DURATION_MINUTES *
+            60 *
+            1000,
+      );
+
     await record.save();
 
     console.warn(
-      `🔒 Account locked: ${email} after ${MAX_FAILED_ATTEMPTS} failed attempts`,
+      `Account locked: ${email} after ${MAX_FAILED_ATTEMPTS} failed attempts`,
     );
+
     return {
       locked: true,
+
       remainingAttempts: 0,
-      message: `Account locked due to ${MAX_FAILED_ATTEMPTS} failed attempts. Try again in ${LOCKOUT_DURATION_MINUTES} minutes.`,
+
+      message:
+        `Account locked due to ${MAX_FAILED_ATTEMPTS} failed attempts. ` +
+        `Try again in ${LOCKOUT_DURATION_MINUTES} minutes.`,
     };
   }
 
   return {
     locked: false,
-    remainingAttempts: MAX_FAILED_ATTEMPTS - record.attempts,
-    message: `Invalid credentials. ${MAX_FAILED_ATTEMPTS - record.attempts} attempt(s) remaining before lockout.`,
+
+    remainingAttempts:
+      MAX_FAILED_ATTEMPTS -
+      record.attempts,
+
+    message:
+      `Invalid credentials. ` +
+      `${
+        MAX_FAILED_ATTEMPTS -
+        record.attempts
+      } attempt(s) remaining before lockout.`,
   };
 };
 
-/**
- * Reset login attempts on successful login
+/*
+ * Clear failed login attempts after
+ * successful authentication.
  */
-const resetLoginAttempts = async (email) => {
-  await LoginAttempt.findOneAndDelete({ email });
+const resetLoginAttempts = async (
+  email,
+) => {
+  await LoginAttempt.findOneAndDelete({
+    email,
+  });
 };
 
-/**
- * Login user
+/*
+ * Login.
  */
-export const login = async (req, res) => {
+export const login = async (
+  req,
+  res,
+) => {
   try {
-    const { email, password } = req.body;
-    const ipAddress = getClientIP(req);
+    const {
+      email,
+      password,
+    } = req.body;
 
-    // Validation
-    if (!email || !password) {
+    const ipAddress =
+      getClientIP(req);
+
+    if (
+      !email ||
+      !password
+    ) {
       return res.status(400).json({
         success: false,
-        error: "Email and password are required",
+        error:
+          "Email and password are required",
       });
     }
 
-    // Check if account is locked
-    const lockStatus = await isAccountLocked(email, ipAddress);
+    const lockStatus =
+      await isAccountLocked(
+        email,
+        ipAddress,
+      );
+
     if (lockStatus.locked) {
       return res.status(423).json({
         success: false,
-        error: lockStatus.message,
+
+        error:
+          lockStatus.message,
+
         locked: true,
-        remainingMinutes: lockStatus.remainingMinutes,
+
+        remainingMinutes:
+          lockStatus.remainingMinutes,
       });
     }
 
-    // Find user
-    const user = await User.findOne({ email });
+    const user =
+      await User.findOne({
+        email,
+      });
+
     if (!user) {
-      // Record failed attempt even if user doesn't exist (prevent username enumeration)
-      const attemptStatus = await recordFailedAttempt(email, ipAddress);
+      const attemptStatus =
+        await recordFailedAttempt(
+          email,
+          ipAddress,
+        );
 
       return res.status(401).json({
         success: false,
-        error: attemptStatus.locked
-          ? attemptStatus.message
-          : "Invalid credentials",
-        remainingAttempts: attemptStatus.remainingAttempts,
-        locked: attemptStatus.locked,
+
+        error:
+          attemptStatus.locked
+            ? attemptStatus.message
+            : "Invalid credentials",
+
+        remainingAttempts:
+          attemptStatus.remainingAttempts,
+
+        locked:
+          attemptStatus.locked,
+
         ...(attemptStatus.locked && {
-          remainingMinutes: LOCKOUT_DURATION_MINUTES,
+          remainingMinutes:
+            LOCKOUT_DURATION_MINUTES,
         }),
       });
     }
 
-    // Check password
-    const isValidPassword = await user.comparePassword(password);
+    const isValidPassword =
+      await user.comparePassword(
+        password,
+      );
+
     if (!isValidPassword) {
-      const attemptStatus = await recordFailedAttempt(email, ipAddress);
+      const attemptStatus =
+        await recordFailedAttempt(
+          email,
+          ipAddress,
+        );
 
       console.warn(
-        `⚠️  Failed login attempt ${attemptStatus.attempts || "locked"} for: ${email} from IP: ${ipAddress}`,
+        `⚠️ Failed login attempt for: ${email} from IP: ${ipAddress}`,
       );
 
       return res.status(401).json({
         success: false,
-        error: attemptStatus.message,
-        remainingAttempts: attemptStatus.remainingAttempts,
-        locked: attemptStatus.locked,
+
+        error:
+          attemptStatus.message,
+
+        remainingAttempts:
+          attemptStatus.remainingAttempts,
+
+        locked:
+          attemptStatus.locked,
+
         ...(attemptStatus.locked && {
-          remainingMinutes: LOCKOUT_DURATION_MINUTES,
+          remainingMinutes:
+            LOCKOUT_DURATION_MINUTES,
         }),
       });
     }
 
-    // Reset failed attempts on successful login
-    await resetLoginAttempts(email);
+    await resetLoginAttempts(
+      email,
+    );
 
-    // Generate token
-    const token = generateToken(user);
+    const token =
+      generateToken(user);
 
     console.log(
       `✅ User logged in: ${email} (${user.role}) from IP: ${ipAddress}`,
@@ -347,99 +576,191 @@ export const login = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Login successful",
+
+      message:
+        "Login successful",
+
       token,
-      user: normalizeUser(user),
+
+      user:
+        normalizeUser(user),
     });
   } catch (error) {
-    console.error("Login error:", error);
+    console.error(
+      "Login error:",
+      error,
+    );
+
     res.status(500).json({
       success: false,
-      error: "Login failed",
+      error:
+        "Login failed",
     });
   }
 };
 
-/**
- * Get current user
+/*
+ * Get current user.
  */
-export const getMe = async (req, res) => {
+export const getMe = async (
+  req,
+  res,
+) => {
   try {
-    const user = await User.findOne({ email: req.user.email }).select(
-      "-password",
-    );
+    /*
+     * New JWTs contain userId.
+     * Email fallback is retained temporarily
+     * for tokens issued before this change.
+     */
+    const user =
+      req.user.userId
+        ? await User.findById(
+            req.user.userId,
+          ).select("-password")
+        : await User.findOne({
+            email:
+              req.user.email,
+          }).select("-password");
+
     if (!user) {
       return res.status(404).json({
         success: false,
-        error: "User not found",
+        error:
+          "User not found",
       });
     }
 
     res.json({
       success: true,
-      user: normalizeUser(user),
+
+      user:
+        normalizeUser(user),
     });
   } catch (error) {
-    console.error("Get user error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to get user",
-    });
-  }
-};
-
-/**
- * Save the current user's default shipping address.
- */
-export const updateShippingAddress = async (req, res) => {
-  try {
-    const address = normalizeShippingAddress(
-      req.body.shippingAddress || req.body,
+    console.error(
+      "Get user error:",
+      error,
     );
-    const validationError = validateShippingAddress(address);
 
-    if (validationError) {
-      return res.status(400).json({
-        success: false,
-        error: validationError,
-      });
-    }
-
-    const user = await User.findOneAndUpdate(
-      { email: req.user.email },
-      { shippingAddress: address },
-      { new: true, runValidators: true },
-    ).select("-password");
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: "User not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      user: normalizeUser(user),
-    });
-  } catch (error) {
-    console.error("Update shipping address error:", error);
     res.status(500).json({
       success: false,
-      error: "Failed to save shipping address",
+      error:
+        "Failed to get user",
     });
   }
 };
 
-/**
- * Logout user (client-side token removal)
+/*
+ * Save default shipping address.
  */
-export const logout = async (req, res) => {
-  console.log(`👋 User logged out: ${req.user?.email}`);
+export const updateShippingAddress =
+  async (req, res) => {
+    try {
+      const address =
+        normalizeShippingAddress(
+          req.body
+            .shippingAddress ||
+            req.body,
+        );
+
+      const validationError =
+        validateShippingAddress(
+          address,
+        );
+
+      if (validationError) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error:
+              validationError,
+          });
+      }
+
+      /*
+       * Prefer immutable user ID for new JWTs.
+       * Retain email fallback for existing tokens.
+       */
+      const query =
+        req.user.userId
+          ? {
+              _id:
+                req.user.userId,
+            }
+          : {
+              email:
+                req.user.email,
+            };
+
+      const user =
+        await User.findOneAndUpdate(
+          query,
+
+          {
+            shippingAddress:
+              address,
+          },
+
+          {
+            new: true,
+            runValidators: true,
+          },
+        ).select("-password");
+
+      if (!user) {
+        return res
+          .status(404)
+          .json({
+            success: false,
+            error:
+              "User not found",
+          });
+      }
+
+      res.json({
+        success: true,
+
+        user:
+          normalizeUser(user),
+      });
+    } catch (error) {
+      console.error(
+        "Update shipping address error:",
+        error,
+      );
+
+      res.status(500).json({
+        success: false,
+
+        error:
+          "Failed to save shipping address",
+      });
+    }
+  };
+
+/*
+ * Logout.
+ *
+ * Authentication currently uses bearer
+ * tokens, so the frontend removes the token.
+ */
+export const logout = async (
+  req,
+  res,
+) => {
+  console.log(
+    `User logged out: ${req.user?.email}`,
+  );
+
   res.json({
     success: true,
-    message: "Logout successful",
+    message:
+      "Logout successful",
   });
 };
 
+/*
+ * authMiddleware.js imports this value.
+ */
 export { JWT_SECRET };
