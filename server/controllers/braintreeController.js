@@ -20,24 +20,69 @@ import {
 } from "../services/inventoryService.js";
 
 /**
- * Generate a client token for Braintree Drop-in UI.
+ * Generate a Braintree client token.
  *
- * NOTE:
- * The arbitrary customerId issue is a separate
- * critical blocker and will be fixed separately.
+ * SECURITY:
+ *
+ * - The route must require authentication.
+ * - Never accept a Braintree customerId from the browser.
+ * - This application does not currently maintain a trusted
+ *   server-side mapping between MongoDB users and Braintree
+ *   customer records.
+ *
+ * Therefore we generate an unscoped client token.
+ *
+ * If vaulted payment methods are added later, the Braintree
+ * customer ID must be looked up server-side from the
+ * authenticated user account.
  */
 export const getClientToken = async (
   req,
   res,
 ) => {
   try {
-    const response =
-      await gateway.clientToken.generate({
-        customerId:
-          req.query.customerId,
+    /*
+     * Defense in depth.
+     *
+     * payments.js will also protect this route
+     * with authenticate middleware.
+     */
+    if (!req.user) {
+      return res.status(401).send({
+        success: false,
+        error: "Authentication required",
       });
+    }
 
-    res.send({
+    /*
+     * CRITICAL SECURITY FIX:
+     *
+     * Previously:
+     *
+     * gateway.clientToken.generate({
+     *   customerId: req.query.customerId,
+     * });
+     *
+     * That allowed a caller to supply an arbitrary
+     * Braintree customer ID.
+     *
+     * Now:
+     *
+     * No customerId is accepted from the request.
+     */
+    const response =
+      await gateway.clientToken.generate({});
+
+    /*
+     * Client tokens should not be cached by
+     * browsers or intermediary caches.
+     */
+    res.set(
+      "Cache-Control",
+      "no-store",
+    );
+
+    return res.status(200).send({
       clientToken:
         response.clientToken,
     });
@@ -47,8 +92,10 @@ export const getClientToken = async (
       err,
     );
 
-    res.status(500).send({
-      error: err.message,
+    return res.status(500).send({
+      success: false,
+      error:
+        "Unable to initialize payment provider",
     });
   }
 };
@@ -435,10 +482,6 @@ export const checkoutWithCart =
       /*
        * Only release inventory when
        * payment did NOT succeed.
-       *
-       * If payment succeeded, releasing it
-       * could allow already-sold stock to
-       * be sold again.
        */
       if (
         inventoryReserved &&

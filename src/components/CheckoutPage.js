@@ -161,19 +161,104 @@ useEffect(() => {
 }, [authLoading, orderSummary, navigate]);
 
   // Fetch Braintree token on mount
-  useEffect(() => {
-    if (isLoggedIn) {
-      fetch(
-        `${process.env.REACT_APP_API_URL || "http://localhost:4242"}/braintree/token`,
-      )
-        .then((res) => res.json())
-        .then((data) => setBraintreeToken(data.clientToken))
-        .catch((err) => {
-          console.error("Failed to load Braintree token:", err);
-          setError("Failed to load PayPal. Please refresh the page.");
-        });
-    }
-  }, [isLoggedIn]);
+
+useEffect(() => {
+  if (!isLoggedIn) {
+    return;
+  }
+
+  const loadBraintreeToken =
+    async () => {
+      try {
+        const token = getToken();
+
+        if (!token) {
+          setError(
+            "Your login session has expired. Please log in again.",
+          );
+
+          return;
+        }
+
+        const response =
+          await fetch(
+            `${
+              process.env
+                .REACT_APP_API_URL ||
+              "http://localhost:4242"
+            }/braintree/token`,
+            {
+              method: "GET",
+
+              headers: {
+                Authorization:
+                  `Bearer ${token}`,
+              },
+
+              cache: "no-store",
+            },
+          );
+
+        const data =
+          await response.json();
+
+        /*
+         * If authentication has expired,
+         * remove the stale local session and
+         * return the customer to login.
+         */
+        if (response.status === 401) {
+          logout();
+
+          navigate("/login", {
+            state: {
+              from: {
+                pathname:
+                  "/checkout",
+              },
+            },
+          });
+
+          return;
+        }
+
+        if (
+          !response.ok ||
+          !data.clientToken
+        ) {
+          throw new Error(
+            data.error ||
+              "Unable to initialize PayPal",
+          );
+        }
+
+        setBraintreeToken(
+          data.clientToken,
+        );
+      } catch (err) {
+        console.error(
+          "Failed to load Braintree token:",
+          err,
+        );
+
+        setError(
+          "Failed to load PayPal. Please refresh the page.",
+        );
+      }
+    };
+
+  loadBraintreeToken();
+
+  /*
+   * Deliberately depend only on login state.
+   *
+   * getToken/logout are currently recreated
+   * by AuthContext on each render, so putting
+   * them in this dependency array would cause
+   * unnecessary repeated token requests.
+   */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [isLoggedIn]);
 
   // Redirect to login if not authenticated - after all hooks
   if (authLoading) {

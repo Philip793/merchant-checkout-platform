@@ -20,7 +20,10 @@ import {
   logout,
   updateShippingAddress,
 } from "../controllers/authController.js";
-import { authenticate, requireAdmin } from "../middleware/authMiddleware.js";
+import {
+  authenticate,
+  requireAdmin,
+} from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -36,8 +39,16 @@ router.post("/create-checkout-session", authenticate, createCheckoutSession);
 router.post("/confirm-payment", confirmPayment);
 
 // Braintree routes - Secure endpoints only (calculate totals server-side)
-router.get("/braintree/token", getClientToken);
-router.post("/braintree/checkout-with-cart", authenticate, checkoutWithCart);
+router.get(
+  "/braintree/token",
+  authenticate,
+  getClientToken,
+);
+router.post(
+  "/braintree/checkout-with-cart",
+  authenticate,
+  checkoutWithCart,
+);
 
 // Order routes - admin only for list/all, optional auth for single order
 router.get("/orders", authenticate, requireAdmin, getOrders);
