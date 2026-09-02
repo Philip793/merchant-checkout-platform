@@ -27,7 +27,133 @@ if (!stripeKey) {
 
 const stripePromise = loadStripe(stripeKey);
 const BraintreeDropIn = BraintreeDropInModule.default;
+const BRAINTREE_ATTEMPT_STORAGE_KEY =
+  "braintreeCheckoutAttempt";
 
+const BRAINTREE_ATTEMPT_TTL_MS =
+  30 * 60 * 1000;
+
+const generateBraintreeIdempotencyKey =
+  () => {
+    if (
+      typeof window !== "undefined" &&
+      window.crypto?.randomUUID
+    ) {
+      return `bt-${window.crypto.randomUUID()}`;
+    }
+
+    return `bt-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+  };
+
+const buildBraintreeFingerprint = ({
+  cartItems,
+  shippingCountry,
+  shippingAddress,
+}) => {
+  const sortedItems = [...cartItems]
+    .map((item) => ({
+      id: Number(item.id),
+      quantity: Number(item.quantity),
+    }))
+    .sort((a, b) => a.id - b.id);
+
+  return JSON.stringify({
+    cartItems: sortedItems,
+
+    shippingCountry,
+
+    shippingAddress: {
+      fullName:
+        shippingAddress?.fullName ||
+        "",
+
+      street:
+        shippingAddress?.street ||
+        "",
+
+      city:
+        shippingAddress?.city ||
+        "",
+
+      state:
+        shippingAddress?.state ||
+        "",
+
+      zip:
+        shippingAddress?.zip ||
+        "",
+
+      country:
+        shippingAddress?.country ||
+        "",
+
+      phone:
+        shippingAddress?.phone ||
+        "",
+    },
+  });
+};
+
+const getOrCreateBraintreeAttempt =
+  (fingerprint) => {
+    try {
+      const saved =
+        sessionStorage.getItem(
+          BRAINTREE_ATTEMPT_STORAGE_KEY,
+        );
+
+      if (saved) {
+        const parsed =
+          JSON.parse(saved);
+
+        const isSameCheckout =
+          parsed.fingerprint ===
+          fingerprint;
+
+        const isStillValid =
+          Date.now() -
+            parsed.createdAt <
+          BRAINTREE_ATTEMPT_TTL_MS;
+
+        if (
+          isSameCheckout &&
+          isStillValid &&
+          parsed.idempotencyKey
+        ) {
+          return parsed.idempotencyKey;
+        }
+      }
+    } catch (error) {
+      console.warn(
+        "Unable to restore Braintree checkout attempt:",
+        error,
+      );
+    }
+
+    const idempotencyKey =
+      generateBraintreeIdempotencyKey();
+
+    sessionStorage.setItem(
+      BRAINTREE_ATTEMPT_STORAGE_KEY,
+      JSON.stringify({
+        idempotencyKey,
+        fingerprint,
+        createdAt: Date.now(),
+      }),
+    );
+
+    return idempotencyKey;
+  };
+
+const clearBraintreeAttempt = () => {
+  sessionStorage.removeItem(
+    BRAINTREE_ATTEMPT_STORAGE_KEY,
+  );
+};
 // -----------------------------
 // Stripe Checkout Form Component
 // -----------------------------
@@ -160,7 +286,7 @@ useEffect(() => {
   }
 }, [authLoading, orderSummary, navigate]);
 
-  // Fetch Braintree token on mount
+ // Fetch Braintree token for the authenticated customer
 
 useEffect(() => {
   if (!isLoggedIn) {
@@ -352,61 +478,262 @@ const createStripePaymentIntent = async () => {
   }
 };
   // Handle Braintree (PayPal) payment with cart data
-  const handleBraintreePurchase = async () => {
-    if (!braintreeInstance || cart.length === 0) return;
+const handleBraintreePurchase =
+  async () => {
+    if (
+      !braintreeInstance ||
+      cart.length === 0
+    ) {
+      return;
+    }
+
     setBraintreeLoading(true);
     setError(null);
 
     try {
-      const { nonce } = await braintreeInstance.requestPaymentMethod();
+      const token = getToken();
 
-      // Prepare cart items for backend (only id and quantity)
-      const cartItems = cart.map((item) => ({
-        id: item.id,
-        quantity: item.quantity,
-      }));
+      if (!token) {
+        logout();
 
-      // Send to secure endpoint that calculates total on backend
-      const res = await fetch(
-  `${process.env.REACT_APP_API_URL || "http://localhost:4242"}/braintree/checkout-with-cart`,
-  {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getToken()}`,
-    },
-    body: JSON.stringify({
-      nonce,
-      cartItems,
-      shippingCountry: orderSummary?.shippingCountry || "AU",
-      customer: {
-        email: user?.email,
-        name: orderSummary?.shippingAddress?.fullName || user?.name,
-      },
-      shippingAddress: orderSummary?.shippingAddress,
-    }),
-  }
-);
-      const data = await res.json();
+        navigate("/login", {
+          state: {
+            from: {
+              pathname: "/checkout",
+            },
+          },
+        });
 
-      if (data.success) {
-        // Navigate to success page with order details
-        navigate("/checkout/success", {
-  state: {
-    orderSummary: data.orderSummary,
-    transactionId: data.transactionId,
-    orderId: data.orderId,
-  },
-});
-      } else {
-        // Navigate to cancel page with error
-        navigate("/checkout/cancel", { state: { error: data.error } });
+        return;
       }
-    } catch (err) {
-      navigate("/checkout/cancel", { state: { error: err.message } });
-    }
 
-    setBraintreeLoading(false);
+      /*
+       * Only product ID and quantity are
+       * sent to the backend.
+       */
+      const cartItems =
+        cart.map((item) => ({
+          id: item.id,
+          quantity:
+            item.quantity,
+        }));
+
+      const shippingCountry =
+        orderSummary
+          ?.shippingCountry ||
+        "AU";
+
+      const shippingAddress =
+        orderSummary
+          ?.shippingAddress ||
+        {};
+
+      /*
+       * Build a stable description of this
+       * specific checkout.
+       *
+       * Changing cart/address creates a new
+       * checkout key.
+       */
+      const fingerprint =
+        buildBraintreeFingerprint({
+          cartItems,
+          shippingCountry,
+          shippingAddress,
+        });
+
+      /*
+       * Reuse the same key for retries.
+       *
+       * This is essential:
+       * generating a fresh key on every retry
+       * would defeat backend duplicate-charge
+       * protection.
+       */
+      const idempotencyKey =
+        getOrCreateBraintreeAttempt(
+          fingerprint,
+        );
+
+      /*
+       * Request the PayPal/Braintree payment
+       * method only after the durable checkout
+       * identifier is established.
+       */
+      const {
+        nonce,
+      } =
+        await braintreeInstance.requestPaymentMethod();
+
+      const response =
+        await fetch(
+          `${
+            process.env
+              .REACT_APP_API_URL ||
+            "http://localhost:4242"
+          }/braintree/checkout-with-cart`,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+
+              Authorization:
+                `Bearer ${token}`,
+            },
+
+            body: JSON.stringify({
+              nonce,
+
+              cartItems,
+
+              shippingCountry,
+
+              customer: {
+                email:
+                  user?.email,
+
+                name:
+                  shippingAddress
+                    ?.fullName ||
+                  user?.name,
+              },
+
+              shippingAddress,
+
+              /*
+               * Stable checkout attempt ID.
+               *
+               * This is NOT authentication.
+               * Ownership still comes from
+               * the JWT on the server.
+               */
+              idempotencyKey,
+            }),
+          },
+        );
+
+      const data =
+        await response.json();
+
+      if (
+        response.status === 401
+      ) {
+        logout();
+
+        navigate("/login", {
+          state: {
+            from: {
+              pathname:
+                "/checkout",
+            },
+          },
+        });
+
+        return;
+      }
+
+      /*
+       * Successful checkout.
+       *
+       * The key has fulfilled its purpose.
+       * Future purchases should get a new one.
+       */
+      if (
+        response.ok &&
+        data.success
+      ) {
+        clearBraintreeAttempt();
+
+        navigate(
+          "/checkout/success",
+          {
+            state: {
+              orderSummary:
+                data.orderSummary ||
+                orderSummary,
+
+              transactionId:
+                data.transactionId,
+
+              orderId:
+                data.orderId,
+
+              pendingOrderId:
+                data.pendingOrderId,
+            },
+          },
+        );
+
+        return;
+      }
+
+      /*
+       * Critical uncertain-payment case.
+       *
+       * KEEP the idempotency key.
+       *
+       * Never generate a new payment attempt
+       * when the backend says the existing
+       * one is processing or already paid.
+       */
+      if (
+        data.pending ||
+        data.paymentSucceeded
+      ) {
+        setError(
+          data.error ||
+            "Your payment is still being finalized. Please do not submit another payment.",
+        );
+
+        return;
+      }
+
+      /*
+       * Provider explicitly rejected the
+       * payment or this attempt can no longer
+       * be reused.
+       *
+       * It is safe for a future checkout
+       * attempt to get a new idempotency key.
+       */
+      clearBraintreeAttempt();
+
+      navigate(
+        "/checkout/cancel",
+        {
+          state: {
+            error:
+              data.error ||
+              "Payment failed",
+          },
+        },
+      );
+    } catch (err) {
+      console.error(
+        "Braintree checkout error:",
+        err,
+      );
+
+      /*
+       * IMPORTANT:
+       *
+       * Do NOT clear the idempotency key for
+       * network/unknown errors.
+       *
+       * The payment provider may have received
+       * the original request even if the browser
+       * never received the response.
+       */
+      setError(
+        "We could not confirm the payment result. Please do not submit another payment yet.",
+      );
+    } finally {
+      setBraintreeLoading(
+        false,
+      );
+    }
   };
 
   // Stripe Elements options
