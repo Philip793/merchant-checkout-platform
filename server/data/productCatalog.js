@@ -408,38 +408,93 @@ export const getCatalogProductById = (id) => {
 };
 
 // Shipping costs in AUD cents.
-//
-// NOTE:
-// We will tighten the relationship between address country and shipping
-// country when we fix the separate shipping-rate manipulation blocker.
+
 const SHIPPING_RATES = {
   AU: 1000, // $10.00 AUD
   US: 3000, // $30.00 AUD
 };
 
-/**
- * Normalise a supplied shipping-country value.
+/*
+ * Normalize supported shipping countries.
  *
- * @param {string} country
- * @returns {"AU"|"US"}
+ * IMPORTANT:
+ * Unknown or missing countries must NOT silently
+ * fall back to Australia because that could let an
+ * invalid address receive the cheaper AU rate.
  */
-export const normalizeShippingCountry = (country) => {
-  const normalized = String(country || "AU")
+export const normalizeShippingCountry = (
+  country,
+) => {
+  const normalized = String(
+    country || "",
+  )
     .trim()
     .toUpperCase();
 
-  return normalized === "US" ? "US" : "AU";
+  if (
+    normalized === "AU" ||
+    normalized === "AUSTRALIA"
+  ) {
+    return "AU";
+  }
+
+  if (
+    normalized === "US" ||
+    normalized === "USA" ||
+    normalized === "UNITED STATES" ||
+    normalized ===
+      "UNITED STATES OF AMERICA"
+  ) {
+    return "US";
+  }
+
+  throw new Error(
+    "Shipping country must be Australia or United States",
+  );
 };
 
-/**
- * Return shipping cost in cents.
+/*
+ * Checkout shipping country must come from
+ * the actual shipping address.
  *
- * @param {string} country
- * @returns {number}
+ * A separate browser-supplied shippingCountry
+ * value must never determine the amount charged.
  */
-export const getShippingCostCents = (country) => {
+export const getShippingCountryFromAddress =
+  (shippingAddress) => {
+    if (
+      !shippingAddress ||
+      typeof shippingAddress !==
+        "object"
+    ) {
+      throw new Error(
+        "Shipping address is required",
+      );
+    }
+
+    if (
+      !shippingAddress.country
+    ) {
+      throw new Error(
+        "Shipping address country is required",
+      );
+    }
+
+    return normalizeShippingCountry(
+      shippingAddress.country,
+    );
+  };
+
+export const getShippingCostCents = (
+  country,
+) => {
+  const normalizedCountry =
+    normalizeShippingCountry(
+      country,
+    );
+
   return SHIPPING_RATES[
-    normalizeShippingCountry(country)
+    normalizedCountry
   ];
 };
 
@@ -475,9 +530,13 @@ export const calculateCartTotal = (
   const validatedItems = [];
 
   const shippingCountry =
-    normalizeShippingCountry(
-      options.shippingCountry,
-    );
+  options.shippingAddress
+    ? getShippingCountryFromAddress(
+        options.shippingAddress,
+      )
+    : normalizeShippingCountry(
+        options.shippingCountry,
+      );
 
   for (const item of cartItems) {
     const product =

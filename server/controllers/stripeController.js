@@ -341,14 +341,10 @@ export const createCheckoutSession =
       }
 
       const {
-        cartItems,
-
-        shippingCountry = "AU",
-
-        customer = {},
-
-        shippingAddress = {},
-      } = req.body;
+  cartItems,
+  customer = {},
+  shippingAddress = {},
+} = req.body;
 
       if (
         !cartItems ||
@@ -366,12 +362,12 @@ export const createCheckoutSession =
       await releaseExpiredPendingOrders();
 
       const orderSummary =
-        calculateCartTotal(
-          cartItems,
-          {
-            shippingCountry,
-          },
-        );
+  calculateCartTotal(
+    cartItems,
+    {
+      shippingAddress,
+    },
+  );
 
       const inventoryItems =
         orderSummary.items.map(

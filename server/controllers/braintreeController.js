@@ -450,14 +450,13 @@ export const checkoutWithCart =
           });
       }
 
-      const {
-        nonce,
-        cartItems,
-        shippingCountry = "AU",
-        customer = {},
-        shippingAddress = {},
-        idempotencyKey,
-      } = req.body;
+const {
+  nonce,
+  cartItems,
+  customer = {},
+  shippingAddress = {},
+  idempotencyKey,
+} = req.body;
 
       /*
        * A client-generated checkout identifier
@@ -731,15 +730,7 @@ export const checkoutWithCart =
           });
       }
 
-      /*
-       * Shipping/address binding remains a
-       * separate critical blocker.
-       */
-      const normalisedShippingCountry =
-        shippingCountry === "US" ||
-        shippingCountry === "AU"
-          ? shippingCountry
-          : "AU";
+      
 
       const safeCustomer = {
         email:
@@ -756,14 +747,13 @@ export const checkoutWithCart =
       /*
        * Server-authoritative product prices.
        */
-      const orderSummary =
-        calculateCartTotal(
-          cartItems,
-          {
-            shippingCountry:
-              normalisedShippingCountry,
-          },
-        );
+const orderSummary =
+  calculateCartTotal(
+    cartItems,
+    {
+      shippingAddress,
+    },
+  );
 
       const inventoryItems =
         orderSummary.items.map(
