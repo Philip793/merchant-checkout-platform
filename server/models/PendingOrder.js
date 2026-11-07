@@ -281,6 +281,15 @@ const PendingOrderSchema =
         default: "reserved",
       },
 
+      // One durable checkout owns exactly one inventory reservation ID.
+      // Existing pre-migration pending orders must be reconciled before rollout.
+      inventoryReservationId: {
+        type: String,
+        required: true,
+        trim: true,
+        index: true,
+      },
+
       expiresAt: {
         type: Date,
         required: true,

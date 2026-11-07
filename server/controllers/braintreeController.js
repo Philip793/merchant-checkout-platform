@@ -1,4 +1,5 @@
 import gateway from "../config/braintree.js";
+import { v4 as uuidv4 } from "uuid";
 
 import {
   sendOrderConfirmationEmailOnce,
@@ -61,6 +62,7 @@ const releasePendingInventory =
         buildInventoryItems(
           pendingOrder,
         ),
+        pendingOrder.inventoryReservationId,
       );
 
     if (inventoryResult.success) {
@@ -134,6 +136,7 @@ const finalizeBraintreePendingOrder =
               buildInventoryItems(
                 pendingOrder,
               ),
+              pendingOrder.inventoryReservationId,
             );
 
           if (
@@ -182,6 +185,7 @@ const finalizeBraintreePendingOrder =
             buildInventoryItems(
               pendingOrder,
             ),
+            pendingOrder.inventoryReservationId,
           );
 
         if (
@@ -327,6 +331,7 @@ const finalizeBraintreePendingOrder =
           buildInventoryItems(
             pendingOrder,
           ),
+          pendingOrder.inventoryReservationId,
         );
 
       if (
@@ -434,6 +439,7 @@ export const checkoutWithCart =
     let pendingOrder = null;
 
     let newlyReservedItems = [];
+    let newReservationId = null;
 
     try {
       const authenticatedUserId =
@@ -504,6 +510,23 @@ const {
         });
 
       if (pendingOrder) {
+        // A timed-out, uncharged attempt must not start a new payment
+        // against an expired inventory reservation.
+        if (
+          pendingOrder.paymentState === "not_started" &&
+          pendingOrder.expiresAt <= new Date()
+        ) {
+          const releaseResult = await releasePendingInventory(pendingOrder);
+          if (!releaseResult.success) {
+            throw new Error("Expired reservation could not be released");
+          }
+          pendingOrder.status = "expired";
+          await pendingOrder.save();
+          return res.status(409).send({
+            success: false,
+            error: "This checkout has expired. Please start a new checkout.",
+          });
+        }
         /*
          * Already finalized:
          * return the same successful result.
@@ -770,9 +793,15 @@ const orderSummary =
        * talking to Braintree.
        */
       if (!pendingOrder) {
+        newReservationId = uuidv4();
+        const reservationExpiresAt = new Date(
+          Date.now() + PENDING_ORDER_TTL_MINUTES * 60 * 1000,
+        );
         const reservationResult =
           await reserveInventory(
             inventoryItems,
+            newReservationId,
+            reservationExpiresAt,
           );
 
         if (
@@ -865,17 +894,14 @@ const orderSummary =
               inventoryStatus:
                 "reserved",
 
+              inventoryReservationId: newReservationId,
+
               paymentState:
                 "not_started",
 
               status: "pending",
 
-              expiresAt: new Date(
-                Date.now() +
-                  PENDING_ORDER_TTL_MINUTES *
-                    60 *
-                    1000,
-              ),
+              expiresAt: reservationExpiresAt,
             });
 
           /*
@@ -895,6 +921,7 @@ const orderSummary =
           ) {
             await releaseInventory(
               newlyReservedItems,
+              newReservationId,
             );
 
             newlyReservedItems = [];
@@ -1115,6 +1142,7 @@ const orderSummary =
         try {
           await releaseInventory(
             newlyReservedItems,
+            newReservationId,
           );
         } catch (releaseError) {
           console.error(

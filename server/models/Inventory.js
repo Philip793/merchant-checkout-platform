@@ -1,180 +1,645 @@
 import mongoose from "mongoose";
 
-/**
- * Inventory Model - Production-grade inventory management
+/*
+ * Each stock reservation belongs to one
+ * specific checkout.
  *
- * Features:
- * - Atomic decrement operations to prevent race conditions
- * - Optimistic locking with version field
- * - Reserved inventory for pending orders
- * - Automatic TTL for abandoned reservations
+ * This prevents one order from confirming
+ * or releasing inventory reserved by another.
  */
-const InventorySchema = new mongoose.Schema(
-  {
-    productId: {
-      type: Number,
-      required: true,
-      unique: true,
-      index: true,
-    },
-    name: {
-      type: String,
-      required: true,
-    },
-    sku: {
-      type: String,
-      required: true,
-      index: true,
-    },
-    // Total physical inventory
-    totalStock: {
-      type: Number,
-      required: true,
-      min: 0,
-      default: 0,
-    },
-    // Available for purchase (total - reserved)
-    availableStock: {
-      type: Number,
-      required: true,
-      min: 0,
-      default: 0,
-    },
-    // Reserved for pending orders/payments
-    reservedStock: {
-      type: Number,
-      required: true,
-      min: 0,
-      default: 0,
-    },
-    // Low stock threshold for alerts
-    lowStockThreshold: {
-      type: Number,
-      default: 10,
-    },
-    // Version for optimistic locking
-    __v: {
-      type: Number,
-      default: 0,
-    },
-    // Last sync with product catalog
-    lastSync: {
-      type: Date,
-      default: Date.now,
-    },
-  },
-  {
-    timestamps: true,
-  },
-);
+const InventoryReservationSchema =
+  new mongoose.Schema(
+    {
+      reservationId: {
+        type: String,
+        required: true,
+        trim: true,
+      },
 
-// Compound index for efficient queries
-InventorySchema.index({ availableStock: 1, lowStockThreshold: 1 });
+      quantity: {
+        type: Number,
+        required: true,
+        min: 1,
+      },
 
-// Virtual to check if stock is low
-InventorySchema.virtual("isLowStock").get(function () {
-  return this.availableStock <= this.lowStockThreshold;
+      status: {
+        type: String,
+        required: true,
+
+        enum: [
+          "reserved",
+          "confirmed",
+          "released",
+        ],
+
+        default: "reserved",
+      },
+
+      expiresAt: {
+        type: Date,
+        required: true,
+      },
+
+      updatedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+    {
+      _id: false,
+    },
+  );
+
+/**
+ * Inventory Model
+ *
+ * totalStock
+ *   Physical unsold stock.
+ *
+ * availableStock
+ *   Stock customers can currently purchase.
+ *
+ * reservedStock
+ *   Stock temporarily assigned to active
+ *   checkout reservations.
+ *
+ * reservations
+ *   Ownership ledger showing which checkout
+ *   owns each reservation.
+ */
+const InventorySchema =
+  new mongoose.Schema(
+    {
+      productId: {
+        type: Number,
+        required: true,
+        unique: true,
+        index: true,
+      },
+
+      name: {
+        type: String,
+        required: true,
+      },
+
+      sku: {
+        type: String,
+        required: true,
+        index: true,
+      },
+
+      totalStock: {
+        type: Number,
+        required: true,
+        min: 0,
+        default: 0,
+      },
+
+      availableStock: {
+        type: Number,
+        required: true,
+        min: 0,
+        default: 0,
+      },
+
+      reservedStock: {
+        type: Number,
+        required: true,
+        min: 0,
+        default: 0,
+      },
+
+      /*
+       * Per-checkout ownership ledger.
+       *
+       * Older Inventory documents will simply
+       * receive an empty array when loaded.
+       */
+      reservations: {
+        type: [InventoryReservationSchema],
+        default: [],
+      },
+
+      lowStockThreshold: {
+        type: Number,
+        default: 10,
+      },
+
+      lastSync: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+    {
+      timestamps: true,
+    },
+  );
+
+InventorySchema.index({
+  availableStock: 1,
+  lowStockThreshold: 1,
 });
 
-// Method to atomically reserve inventory
-InventorySchema.methods.reserve = async function (quantity) {
-  const result = await this.constructor.findOneAndUpdate(
-    {
-      _id: this._id,
-      availableStock: { $gte: quantity },
-    },
-    {
-      $inc: { availableStock: -quantity, reservedStock: quantity },
-      $set: { lastSync: new Date() },
-    },
-    { new: true },
+/*
+ * Fast lookup when confirming/releasing a
+ * particular checkout reservation.
+ */
+InventorySchema.index({
+  "reservations.reservationId": 1,
+});
+
+/*
+ * Useful to the reservation expiry worker.
+ */
+InventorySchema.index({
+  "reservations.status": 1,
+  "reservations.expiresAt": 1,
+});
+
+InventorySchema.virtual(
+  "isLowStock",
+).get(function () {
+  return (
+    this.availableStock <=
+    this.lowStockThreshold
   );
+});
 
-  return result !== null;
-};
+/**
+ * Atomically reserve this product for one
+ * checkout.
+ *
+ * The reservationId is part of the atomic
+ * condition, so retrying the same reservation
+ * cannot decrement available stock twice.
+ */
+InventorySchema.statics.reserveForCheckout =
+  async function ({
+    productId,
+    quantity,
+    reservationId,
+    expiresAt,
+  }) {
+    if (
+      !reservationId ||
+      typeof reservationId !== "string"
+    ) {
+      throw new Error(
+        "reservationId is required",
+      );
+    }
 
-// Method to atomically release reserved inventory
-InventorySchema.methods.release = async function (quantity) {
-  const result = await this.constructor.findOneAndUpdate(
-    {
-      _id: this._id,
-      reservedStock: { $gte: quantity },
-    },
-    {
-      $inc: { availableStock: quantity, reservedStock: -quantity },
-      $set: { lastSync: new Date() },
-    },
-    { new: true },
-  );
+    if (
+      !Number.isInteger(quantity) ||
+      quantity < 1
+    ) {
+      throw new Error(
+        "Reservation quantity must be a positive integer",
+      );
+    }
 
-  return result !== null;
-};
+    if (
+      !(expiresAt instanceof Date) ||
+      !Number.isFinite(expiresAt.getTime()) ||
+      expiresAt <= new Date()
+    ) {
+      throw new Error("Reservation requires a future expiry date");
+    }
 
-// Method to confirm reservation (convert reserved to sold)
-InventorySchema.methods.confirm = async function (quantity) {
-  const result = await this.constructor.findOneAndUpdate(
-    {
-      _id: this._id,
-      reservedStock: { $gte: quantity },
-      totalStock: { $gte: quantity },
-    },
-    {
-      $inc: { reservedStock: -quantity, totalStock: -quantity },
-      $set: { lastSync: new Date() },
-    },
-    { new: true },
-  );
+    /*
+     * Only create a new reservation when this
+     * reservationId is not already present.
+     */
+    const result =
+      await this.findOneAndUpdate(
+        {
+          productId,
 
-  return result !== null;
-};
+          availableStock: {
+            $gte: quantity,
+          },
 
-// Static method to check and reserve in one atomic operation
-InventorySchema.statics.checkAndReserve = async function (productId, quantity) {
-  return await this.findOneAndUpdate(
-    {
-      productId,
-      availableStock: { $gte: quantity },
-    },
-    {
-      $inc: { availableStock: -quantity, reservedStock: quantity },
-      $set: { lastSync: new Date() },
-    },
-    { new: true },
-  );
-};
-
-// Static method to initialize inventory from product catalog
-InventorySchema.statics.syncFromCatalog = async function (productCatalog) {
-  const operations = [];
-
-  for (const [key, product] of Object.entries(productCatalog)) {
-    operations.push({
-      updateOne: {
-        filter: { productId: product.id },
-        update: {
-          $setOnInsert: {
-            productId: product.id,
-            name: product.name,
-            sku: product.sku || `SKU-${product.id}`,
-            totalStock: product.inventory || 0,
-            availableStock: product.inventory || 0,
-            reservedStock: 0,
-            lowStockThreshold: 10,
+          "reservations.reservationId": {
+            $ne: reservationId,
           },
         },
-        upsert: true,
-      },
-    });
-  }
 
-  if (operations.length > 0) {
-    await this.bulkWrite(operations);
-    console.log(`✅ Inventory synced: ${operations.length} products`);
-  }
+        {
+          $inc: {
+            availableStock:
+              -quantity,
 
-  return operations.length;
-};
+            reservedStock:
+              quantity,
+          },
 
-const Inventory = mongoose.model("Inventory", InventorySchema);
+          $push: {
+            reservations: {
+              reservationId,
+              quantity,
+              status: "reserved",
+              expiresAt,
+              updatedAt:
+                new Date(),
+            },
+          },
+
+          $set: {
+            lastSync:
+              new Date(),
+          },
+        },
+
+        {
+          new: true,
+        },
+      );
+
+    if (result) {
+      return {
+        success: true,
+        alreadyReserved: false,
+        inventory: result,
+      };
+    }
+
+    /*
+     * The update may have failed because:
+     *
+     * 1. stock is insufficient, or
+     * 2. this exact reservation already exists.
+     *
+     * Check for case 2 so reservation retries
+     * are idempotent.
+     */
+    const existing =
+      await this.findOne({
+        productId,
+        "reservations.reservationId":
+          reservationId,
+      });
+
+    if (existing) {
+      const reservation =
+        existing.reservations.find(
+          (entry) =>
+            entry.reservationId ===
+            reservationId,
+        );
+
+      if (
+        reservation &&
+        reservation.quantity ===
+          quantity &&
+        reservation.status ===
+          "reserved"
+      ) {
+        return {
+          success: true,
+          alreadyReserved: true,
+          inventory: existing,
+        };
+      }
+
+      return {
+        success: false,
+
+        reason:
+          "Reservation ID already exists in an incompatible state",
+      };
+    }
+
+    return {
+      success: false,
+
+      reason:
+        "Insufficient available inventory",
+    };
+  };
+
+/**
+ * Confirm one product reservation.
+ *
+ * Only a reservation belonging to this exact
+ * reservationId can be converted into sold
+ * stock.
+ */
+InventorySchema.statics.confirmReservation =
+  async function ({
+    productId,
+    quantity,
+    reservationId,
+  }) {
+    if (!reservationId || !Number.isInteger(quantity) || quantity < 1) {
+      throw new Error("Invalid reservation confirmation request");
+    }
+    const result =
+      await this.findOneAndUpdate(
+        {
+          productId,
+
+          reservations: {
+            $elemMatch: {
+              reservationId,
+              quantity,
+              status:
+                "reserved",
+            },
+          },
+
+          reservedStock: {
+            $gte: quantity,
+          },
+
+          totalStock: {
+            $gte: quantity,
+          },
+        },
+
+        {
+          $inc: {
+            reservedStock:
+              -quantity,
+
+            totalStock:
+              -quantity,
+          },
+
+          $set: {
+            "reservations.$.status":
+              "confirmed",
+
+            "reservations.$.updatedAt":
+              new Date(),
+
+            lastSync:
+              new Date(),
+          },
+        },
+
+        {
+          new: true,
+        },
+      );
+
+    if (result) {
+      return {
+        success: true,
+        alreadyConfirmed: false,
+        inventory: result,
+      };
+    }
+
+    /*
+     * Idempotency:
+     *
+     * If this reservation was already confirmed,
+     * a webhook/retry should count as success
+     * rather than deducting stock again.
+     */
+    const existing =
+      await this.findOne({
+        productId,
+        "reservations.reservationId":
+          reservationId,
+      });
+
+    const reservation =
+      existing?.reservations.find(
+        (entry) =>
+          entry.reservationId ===
+          reservationId,
+      );
+
+    if (
+      reservation &&
+      reservation.quantity ===
+        quantity &&
+      reservation.status ===
+        "confirmed"
+    ) {
+      return {
+        success: true,
+        alreadyConfirmed: true,
+        inventory: existing,
+      };
+    }
+
+    return {
+      success: false,
+
+      reason:
+        reservation?.status ===
+        "released"
+          ? "Reservation has already been released"
+          : "Matching reserved inventory was not found",
+    };
+  };
+
+/**
+ * Release one product reservation.
+ *
+ * Only stock owned by this reservationId can
+ * return to available stock.
+ */
+InventorySchema.statics.releaseReservation =
+  async function ({
+    productId,
+    quantity,
+    reservationId,
+  }) {
+    if (!reservationId || !Number.isInteger(quantity) || quantity < 1) {
+      throw new Error("Invalid reservation release request");
+    }
+    const result =
+      await this.findOneAndUpdate(
+        {
+          productId,
+
+          reservations: {
+            $elemMatch: {
+              reservationId,
+              quantity,
+              status:
+                "reserved",
+            },
+          },
+
+          reservedStock: {
+            $gte: quantity,
+          },
+        },
+
+        {
+          $inc: {
+            availableStock:
+              quantity,
+
+            reservedStock:
+              -quantity,
+          },
+
+          $set: {
+            "reservations.$.status":
+              "released",
+
+            "reservations.$.updatedAt":
+              new Date(),
+
+            lastSync:
+              new Date(),
+          },
+        },
+
+        {
+          new: true,
+        },
+      );
+
+    if (result) {
+      return {
+        success: true,
+        alreadyReleased: false,
+        inventory: result,
+      };
+    }
+
+    /*
+     * A duplicate release request must not add
+     * the stock twice.
+     */
+    const existing =
+      await this.findOne({
+        productId,
+        "reservations.reservationId":
+          reservationId,
+      });
+
+    const reservation =
+      existing?.reservations.find(
+        (entry) =>
+          entry.reservationId ===
+          reservationId,
+      );
+
+    if (
+      reservation &&
+      reservation.quantity ===
+        quantity &&
+      reservation.status ===
+        "released"
+    ) {
+      return {
+        success: true,
+        alreadyReleased: true,
+        inventory: existing,
+      };
+    }
+
+    return {
+      success: false,
+
+      reason:
+        reservation?.status ===
+        "confirmed"
+          ? "Confirmed inventory cannot be released"
+          : "Matching reserved inventory was not found",
+    };
+  };
+
+/**
+ * Initialise inventory from the authoritative
+ * product catalogue.
+ *
+ * IMPORTANT:
+ * Existing stock values and reservation ledgers
+ * are deliberately not overwritten on startup.
+ */
+InventorySchema.statics.syncFromCatalog =
+  async function (
+    productCatalog,
+  ) {
+    const operations = [];
+
+    for (const product of Object.values(
+      productCatalog,
+    )) {
+      operations.push({
+        updateOne: {
+          filter: {
+            productId:
+              product.id,
+          },
+
+          update: {
+            $setOnInsert: {
+              productId:
+                product.id,
+
+              name:
+                product.name,
+
+              sku:
+                product.sku ||
+                `SKU-${product.id}`,
+
+              totalStock:
+                product.inventory ||
+                0,
+
+              availableStock:
+                product.inventory ||
+                0,
+
+              reservedStock: 0,
+
+              reservations: [],
+
+              lowStockThreshold:
+                10,
+            },
+
+            /*
+             * Product identity may be refreshed
+             * without touching live stock counts.
+             */
+            $set: {
+              name:
+                product.name,
+
+              sku:
+                product.sku ||
+                `SKU-${product.id}`,
+
+              lastSync:
+                new Date(),
+            },
+          },
+
+          upsert: true,
+        },
+      });
+    }
+
+    if (
+      operations.length > 0
+    ) {
+      await this.bulkWrite(
+        operations,
+      );
+
+      console.log(
+        `Inventory synced: ${operations.length} products`,
+      );
+    }
+
+    return operations.length;
+  };
+
+const Inventory =
+  mongoose.model(
+    "Inventory",
+    InventorySchema,
+  );
 
 export default Inventory;

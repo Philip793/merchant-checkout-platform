@@ -1,4 +1,5 @@
 import stripe from "../config/stripe.js";
+import { v4 as uuidv4 } from "uuid";
 import {
   calculateCartTotal,
 } from "../data/productCatalog.js";
@@ -77,6 +78,7 @@ const releasePendingInventory =
         buildInventoryItems(
           pendingOrder,
         ),
+        pendingOrder.inventoryReservationId,
       );
 
     if (inventoryResult.success) {
@@ -167,6 +169,7 @@ const finalizePendingOrder = async (
           buildInventoryItems(
             pendingOrder,
           ),
+          pendingOrder.inventoryReservationId,
         );
 
       if (inventoryResult.success) {
@@ -286,6 +289,7 @@ const finalizePendingOrder = async (
       buildInventoryItems(
         pendingOrder,
       ),
+      pendingOrder.inventoryReservationId,
     );
 
   if (!inventoryResult.success) {
@@ -322,6 +326,10 @@ export const createCheckoutSession =
     let pendingOrder = null;
 
     let reservedItems = [];
+    const reservationId = uuidv4();
+    const reservationExpiresAt = new Date(
+      Date.now() + PENDING_ORDER_TTL_MINUTES * 60 * 1000,
+    );
 
     try {
       /*
@@ -381,6 +389,8 @@ export const createCheckoutSession =
       const reservation =
         await reserveInventory(
           inventoryItems,
+          reservationId,
+          reservationExpiresAt,
         );
 
       if (!reservation.success) {
@@ -447,12 +457,9 @@ export const createCheckoutSession =
           inventoryStatus:
             "reserved",
 
-          expiresAt: new Date(
-            Date.now() +
-              PENDING_ORDER_TTL_MINUTES *
-                60 *
-                1000,
-          ),
+          inventoryReservationId: reservationId,
+
+          expiresAt: reservationExpiresAt,
         });
 
       const paymentIntent =
@@ -530,6 +537,7 @@ export const createCheckoutSession =
       ) {
         await releaseInventory(
           reservedItems,
+          reservationId,
         ).catch((releaseErr) => {
           console.error(
             "Failed to release reserved inventory after checkout error:",

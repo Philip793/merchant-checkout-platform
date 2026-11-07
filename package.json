@@ -29,7 +29,7 @@
     "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.14.0",
-    "mongodb": "^7.2.0",
+    "mongodb": "^7.6.0",
     "mongoose": "^9.6.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -63,49 +63,72 @@ export const checkInventory = async (cartItems) => {
  * @param {Array} cartItems - Array of {id, quantity}
  * @returns {Object} - { success: boolean, reservations: [], errors: [] }
  */
-export const reserveInventory = async (cartItems) => {
+const validateReservationRequest = (cartItems, reservationId) => {
+  if (!reservationId || typeof reservationId !== "string") {
+    throw new Error("A checkout reservation ID is required");
+  }
+  if (!Array.isArray(cartItems) || cartItems.length === 0) {
+    throw new Error("A non-empty inventory cart is required");
+  }
+  const seen = new Set();
+  for (const item of cartItems) {
+    if (!Number.isInteger(item.id) || !Number.isInteger(item.quantity) || item.quantity < 1) {
+      throw new Error("Invalid inventory product ID or quantity");
+    }
+    if (seen.has(item.id)) {
+      throw new Error(`Duplicate product ${item.id} in inventory cart`);
+    }
+    seen.add(item.id);
+  }
+};
+
+export const reserveInventory = async (cartItems, reservationId, expiresAt) => {
+  validateReservationRequest(cartItems, reservationId);
+  if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date()) {
+    throw new Error("A future reservation expiry is required");
+  }
   const reservations = [];
   const errors = [];
 
   for (const item of cartItems) {
-    const result = await Inventory.checkAndReserve(item.id, item.quantity);
-
-    if (!result) {
-      const inventory = await Inventory.findOne({ productId: item.id });
-      errors.push({
+    try {
+      const result = await Inventory.reserveForCheckout({
         productId: item.id,
-        productName: inventory?.name || "Unknown",
-        requested: item.quantity,
-        available: inventory?.availableStock || 0,
-        reason: "Could not reserve - insufficient stock or product not found",
+        quantity: item.quantity,
+        reservationId,
+        expiresAt,
       });
-    } else {
+      if (!result.success) {
+        errors.push({ productId: item.id, reason: result.reason || "Insufficient stock" });
+        break;
+      }
       reservations.push({
         productId: item.id,
-        productName: result.name,
+        productName: result.inventory.name,
         reserved: item.quantity,
-        remaining: result.availableStock,
+        remaining: result.inventory.availableStock,
+        alreadyReserved: Boolean(result.alreadyReserved),
       });
-
-      console.log(
-        `📦 Reserved: ${result.name} - ${item.quantity} units (available: ${result.availableStock})`,
-      );
+    } catch (error) {
+      errors.push({ productId: item.id, reason: error.message });
+      break;
     }
   }
 
-  // Rollback if any reservation failed
+  // Roll back only reservations created by THIS call, never a prior retry.
   if (errors.length > 0 && reservations.length > 0) {
-    console.warn("⚠️ Rolling back partial reservations...");
-    for (const reservation of reservations) {
-      const item = cartItems.find((i) => i.id === reservation.productId);
-      if (item) {
-        const inventory = await Inventory.findOne({ productId: item.id });
-        if (inventory) {
-          await inventory.release(item.quantity);
-          console.log(
-            `🔄 Released reservation: ${inventory.name} +${item.quantity}`,
-          );
+    for (const reservation of reservations.filter((item) => !item.alreadyReserved)) {
+      try {
+        const released = await Inventory.releaseReservation({
+          productId: reservation.productId,
+          quantity: reservation.reserved,
+          reservationId,
+        });
+        if (!released.success) {
+          errors.push({ productId: reservation.productId, reason: `Rollback failed: ${released.reason}` });
         }
+      } catch (error) {
+        errors.push({ productId: reservation.productId, reason: `Rollback failed: ${error.message}` });
       }
     }
   }
@@ -123,35 +146,29 @@ export const reserveInventory = async (cartItems) => {
  * @param {Array} cartItems - Array of {id, quantity}
  * @returns {Object} - { success: boolean, updatedProducts: [], errors: [] }
  */
-export const confirmInventory = async (cartItems) => {
+export const confirmInventory = async (cartItems, reservationId) => {
+  validateReservationRequest(cartItems, reservationId);
   const updatedProducts = [];
   const errors = [];
 
   for (const item of cartItems) {
-    const inventory = await Inventory.findOne({ productId: item.id });
-
-    if (!inventory) {
-      errors.push(`Product ${item.id} not found in inventory`);
-      continue;
-    }
-
-    const result = await inventory.confirm(item.quantity);
-
-    if (!result) {
-      errors.push(
-        `Failed to confirm inventory for ${inventory.name}: reserved=${inventory.reservedStock}, total=${inventory.totalStock}`,
-      );
-    } else {
+    try {
+      const result = await Inventory.confirmReservation({
+        productId: item.id, quantity: item.quantity, reservationId,
+      });
+      if (!result.success) {
+        errors.push(`Product ${item.id}: ${result.reason}`);
+        continue;
+      }
       updatedProducts.push({
         id: item.id,
-        name: inventory.name,
+        name: result.inventory.name,
         sold: item.quantity,
-        remaining: inventory.totalStock - item.quantity,
+        remaining: result.inventory.totalStock,
+        alreadyConfirmed: Boolean(result.alreadyConfirmed),
       });
-
-      console.log(
-        `📦 Confirmed sale: ${inventory.name} - ${item.quantity} units (total remaining: ${inventory.totalStock - item.quantity})`,
-      );
+    } catch (error) {
+      errors.push(`Product ${item.id}: ${error.message}`);
     }
   }
 
@@ -168,35 +185,29 @@ export const confirmInventory = async (cartItems) => {
  * @param {Array} cartItems - Array of {id, quantity}
  * @returns {Object} - { success: boolean, releasedProducts: [], errors: [] }
  */
-export const releaseInventory = async (cartItems) => {
+export const releaseInventory = async (cartItems, reservationId) => {
+  validateReservationRequest(cartItems, reservationId);
   const releasedProducts = [];
   const errors = [];
 
   for (const item of cartItems) {
-    const inventory = await Inventory.findOne({ productId: item.id });
-
-    if (!inventory) {
-      errors.push(`Product ${item.id} not found in inventory`);
-      continue;
-    }
-
-    const result = await inventory.release(item.quantity);
-
-    if (!result) {
-      errors.push(
-        `Failed to release inventory for ${inventory.name}: reserved=${inventory.reservedStock}`,
-      );
-    } else {
+    try {
+      const result = await Inventory.releaseReservation({
+        productId: item.id, quantity: item.quantity, reservationId,
+      });
+      if (!result.success) {
+        errors.push(`Product ${item.id}: ${result.reason}`);
+        continue;
+      }
       releasedProducts.push({
         id: item.id,
-        name: inventory.name,
+        name: result.inventory.name,
         released: item.quantity,
-        available: result.availableStock,
+        available: result.inventory.availableStock,
+        alreadyReleased: Boolean(result.alreadyReleased),
       });
-
-      console.log(
-        `Inventory released: ${inventory.name} +${item.quantity} available`,
-      );
+    } catch (error) {
+      errors.push(`Product ${item.id}: ${error.message}`);
     }
   }
 
