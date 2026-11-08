@@ -96,27 +96,76 @@ const releaseExpiredPendingOrders =
     const expiredOrders =
       await PendingOrder.find({
         status: "pending",
-
         inventoryStatus:
           "reserved",
-
         expiresAt: {
           $lte: new Date(),
         },
+        // Legacy checkouts were created before per-checkout reservation
+        // IDs existed. They must be reconciled separately; attempting to
+        // release them through the new inventory API would throw.
+        inventoryReservationId: {
+          $exists: true,
+          $type: "string",
+          $ne: "",
+        },
       }).limit(50);
 
-    for (const pendingOrder of
-      expiredOrders) {
-      const inventoryResult =
-        await releasePendingInventory(
-          pendingOrder,
-        );
+    for (const pendingOrder of expiredOrders) {
+      try {
+        if (pendingOrder.stripePaymentIntentId) {
+          // Do not release stock merely because our local timer elapsed.
+          // The payment provider is authoritative about payment status.
+          const paymentIntent = await stripe.paymentIntents.retrieve(
+            pendingOrder.stripePaymentIntentId,
+          );
 
-      if (inventoryResult.success) {
-        pendingOrder.status =
-          "expired";
+          if (paymentIntent.status === "succeeded") {
+            const order = await finalizePendingOrder(pendingOrder, paymentIntent);
+            await sendOrderConfirmationEmailOnce(order);
+            continue;
+          }
 
+          if (paymentIntent.status !== "canceled") {
+            // A pending/authorized payment may still settle. Keep its stock
+            // reserved until a separate reconciliation flow resolves it.
+            const cancellable = [
+              "requires_payment_method",
+              "requires_confirmation",
+              "requires_action",
+            ];
+            if (!cancellable.includes(paymentIntent.status)) {
+              console.warn("Expired Stripe checkout requires reconciliation", {
+                pendingOrderId: pendingOrder._id.toString(),
+                paymentIntentId: paymentIntent.id,
+                paymentStatus: paymentIntent.status,
+              });
+              continue;
+            }
+
+            // Cancel at Stripe FIRST. Never release reserved stock while
+            // its payment intent could still accept a payment.
+            const cancelled = await stripe.paymentIntents.cancel(paymentIntent.id);
+            if (cancelled.status !== "canceled") {
+              throw new Error("Stripe did not confirm payment cancellation");
+            }
+          }
+        }
+
+        const inventoryResult = await releasePendingInventory(pendingOrder);
+        if (!inventoryResult.success) {
+          throw new Error(`Inventory release failed: ${JSON.stringify(inventoryResult.errors)}`);
+        }
+
+        pendingOrder.status = "expired";
         await pendingOrder.save();
+      } catch (error) {
+        // One old or temporarily failing checkout must not block all new
+        // Stripe checkouts. Keep the reserved state for later reconciliation.
+        console.error("Expired Stripe checkout reconciliation failed", {
+          pendingOrderId: pendingOrder._id.toString(),
+          error: error.message,
+        });
       }
     }
   };
