@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useCart } from "../context/CartContext.js";
 import { useNavigate } from "react-router-dom";
-import { ShoppingBag, ArrowRight, Trash2, Package } from "lucide-react";
+import { ShoppingBag, ArrowRight, Trash2 } from "lucide-react";
 
 const CartPage = () => {
   const { cart, removeFromCart, cartCount } = useCart();
@@ -123,20 +123,17 @@ const CartPage = () => {
 
           {/* Order Summary */}
           <div className="bg-gray-50 p-4 sm:p-6 border-t border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <span className="text-gray-600">Subtotal</span>
-              <span className="text-lg text-gray-800">${total.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between items-center mb-6">
-              <span className="text-gray-600">Shipping</span>
-              <span className="text-green-600 font-medium">Free</span>
-            </div>
-            <div className="flex justify-between items-center pt-4 border-t border-gray-200">
-              <span className="text-xl font-semibold text-gray-800">Total</span>
+            <div className="flex justify-between items-center">
+              <span className="text-xl font-semibold text-gray-800">
+                Items subtotal
+              </span>
               <span className="text-2xl font-bold text-burgundy-600">
-                ${total.toFixed(2)}
+                ${total.toFixed(2)} AUD
               </span>
             </div>
+            <p className="mt-3 text-sm text-gray-600">
+              Shipping is calculated after you enter your delivery address at checkout.
+            </p>
           </div>
 
           {/* Action Buttons */}
@@ -165,11 +162,7 @@ const CartPage = () => {
         </div>
 
         {/* Trust Badges */}
-        <div className="mt-8 grid grid-cols-3 gap-4 text-center">
-          <div className="flex flex-col items-center">
-            <Package className="w-8 h-8 text-burgundy-600 mb-2" />
-            <span className="text-sm text-gray-600">Free Shipping</span>
-          </div>
+        <div className="mt-8 grid grid-cols-2 gap-4 text-center">
           <div className="flex flex-col items-center">
             <svg
               className="w-8 h-8 text-burgundy-600 mb-2"
