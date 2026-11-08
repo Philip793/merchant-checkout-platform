@@ -576,13 +576,6 @@ InventorySchema.statics.syncFromCatalog =
               productId:
                 product.id,
 
-              name:
-                product.name,
-
-              sku:
-                product.sku ||
-                `SKU-${product.id}`,
-
               totalStock:
                 product.inventory ||
                 0,
