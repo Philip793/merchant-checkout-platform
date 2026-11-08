@@ -124,9 +124,7 @@ const CartPage = () => {
           {/* Order Summary */}
           <div className="bg-gray-50 p-4 sm:p-6 border-t border-gray-200">
             <div className="flex justify-between items-center">
-              <span className="text-xl font-semibold text-gray-800">
-                Items subtotal
-              </span>
+              <span className="text-xl font-semibold text-gray-800">Items subtotal</span>
               <span className="text-2xl font-bold text-burgundy-600">
                 ${total.toFixed(2)} AUD
               </span>

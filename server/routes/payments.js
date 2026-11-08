@@ -50,7 +50,7 @@ router.post("/auth/logout", authenticate, logout);
 
 // Stripe routes - Secure endpoints only (calculate totals server-side)
 router.post("/create-checkout-session", authenticate, createCheckoutSession);
-router.post("/confirm-payment", confirmPayment);
+router.post("/confirm-payment", authenticate, confirmPayment);
 
 // Braintree routes - Secure endpoints only (calculate totals server-side)
 router.get(

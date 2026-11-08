@@ -86,7 +86,7 @@ const releasePendingInventory =
  * Braintree transaction must never create
  * multiple permanent orders.
  */
-const finalizeBraintreePendingOrder =
+export const finalizeBraintreePendingOrder =
   async (pendingOrder) => {
     if (!pendingOrder) {
       throw new Error(
@@ -980,16 +980,27 @@ const orderSummary = verifyCheckoutQuote({
        *
        * Only now do we permit a provider charge.
        */
-      pendingOrder.paymentState =
-        "processing";
-
-      pendingOrder.paymentAttemptedAt =
-        new Date();
-
-      pendingOrder.failureReason =
-        undefined;
-
-      await pendingOrder.save();
+      // Atomic claim prevents two requests (or the expiry worker) from
+      // starting competing transitions on the same reservation.
+      const claimed = await PendingOrder.findOneAndUpdate(
+        {
+          _id: pendingOrder._id, userId: authenticatedUserId,
+          status: "pending", paymentState: "not_started",
+          inventoryStatus: "reserved", expiresAt: { $gt: new Date() },
+        },
+        {
+          $set: { paymentState: "processing", paymentAttemptedAt: new Date() },
+          $unset: { failureReason: "" },
+        },
+        { new: true },
+      );
+      if (!claimed) {
+        return res.status(409).json({
+          success: false, pending: true,
+          error: "This checkout has expired or is already being processed. Do not submit another payment.",
+        });
+      }
+      pendingOrder = claimed;
 
       /*
        * The Braintree orderId is the MongoDB

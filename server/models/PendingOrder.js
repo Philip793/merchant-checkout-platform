@@ -312,6 +312,8 @@ const PendingOrderSchema =
         maxlength: 1000,
       },
 
+      reconciliationAlertSentAt: { type: Date },
+
       metadata: {
         type: Map,
         of: String,

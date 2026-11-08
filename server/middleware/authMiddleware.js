@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import User from "../models/User.js";
 import { JWT_SECRET } from "../controllers/authController.js";
 
 /**
@@ -39,7 +40,7 @@ export const authenticate = (req, res, next) => {
 /**
  * Check if user has admin role
  */
-export const requireAdmin = (req, res, next) => {
+export const requireAdmin = async (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({
       success: false,
@@ -47,14 +48,18 @@ export const requireAdmin = (req, res, next) => {
     });
   }
 
-  if (req.user.role !== "admin") {
+  try {
+    const account = await User.findById(req.user.userId).select("role").lean();
+    if (account?.role !== "admin") {
     return res.status(403).json({
       success: false,
       error: "Admin access required",
     });
+    }
+    next();
+  } catch (error) {
+    next(error);
   }
-
-  next();
 };
 
 /**

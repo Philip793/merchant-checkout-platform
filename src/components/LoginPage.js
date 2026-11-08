@@ -32,8 +32,9 @@ const LoginPage = () => {
         setError("Name is required");
         return false;
       }
-      if (password.length < 6) {
-        setError("Password must be at least 6 characters");
+      if (password.length < 12 || password.length > 128 ||
+          !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password)) {
+        setError("Password must be 12–128 characters with uppercase, lowercase and a number");
         return false;
       }
       if (password !== confirmPassword) {
@@ -196,6 +197,11 @@ const LoginPage = () => {
                   className="appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
                   placeholder="********"
                 />
+                {!isLogin && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Use at least 12 characters with uppercase, lowercase and a number.
+                  </p>
+                )}
               </div>
 
               {!isLogin && (

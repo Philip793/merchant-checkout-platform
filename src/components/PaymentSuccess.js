@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useCart } from "../context/CartContext.js";
+import { useAuth } from "../context/AuthContext.js";
 import SEO from "./SEO.js";
 
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:4242";
@@ -9,6 +10,9 @@ const PaymentSuccess = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { clearCart } = useCart();
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
   const [confirmationStatus, setConfirmationStatus] = useState("confirming");
   const [orderId, setOrderId] = useState(location.state?.orderId || null);
   const [errorMessage, setErrorMessage] = useState("");
@@ -30,12 +34,11 @@ const PaymentSuccess = () => {
 
   const transactionId = urlPaymentIntent || location.state?.transactionId;
   const isStripePayment = transactionId?.startsWith("pi_");
+  const braintreeOrderId = location.state?.orderId;
 
   useEffect(() => {
     if (hasStarted.current) return;
     hasStarted.current = true;
-    clearCart();
-
     if (!transactionId) {
       setConfirmationStatus("error");
       setErrorMessage(
@@ -45,6 +48,14 @@ const PaymentSuccess = () => {
     }
 
     if (!isStripePayment) {
+      // Braintree reaches this page only after its checkout endpoint
+      // returned a successful recorded order.
+      if (!braintreeOrderId) {
+        setConfirmationStatus("error");
+        setErrorMessage("Order confirmation is missing. Please contact support before retrying payment.");
+        return;
+      }
+      clearCart();
       setConfirmationStatus("confirmed");
       sessionStorage.removeItem("pendingOrderSummary");
       sessionStorage.removeItem("pendingOrderId");
@@ -60,6 +71,7 @@ const PaymentSuccess = () => {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              Authorization: `Bearer ${getTokenRef.current() || ""}`,
             },
             body: JSON.stringify({ paymentIntentId: transactionId }),
           });
@@ -69,6 +81,7 @@ const PaymentSuccess = () => {
           if (cancelled) return;
 
           if (response.ok && data.orderCreated) {
+            clearCart();
             setOrderId(data.orderId);
             setConfirmationStatus("confirmed");
             sessionStorage.removeItem("pendingOrderSummary");
@@ -106,7 +119,7 @@ const PaymentSuccess = () => {
     return () => {
       cancelled = true;
     };
-  }, [clearCart, isStripePayment, transactionId]);
+  }, [clearCart, isStripePayment, transactionId, braintreeOrderId]);
 
   const isError = confirmationStatus === "error";
 

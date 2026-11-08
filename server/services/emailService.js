@@ -341,3 +341,28 @@ export const sendMerchantOrderNotificationEmailOnce = async (order) => {
     return { sent: false, error: error.message };
   }
 };
+
+export const sendPaymentReconciliationAlertOnce = async (pending, reason) => {
+  if (pending.reconciliationAlertSentAt) return { skipped: true };
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.ORDER_EMAIL_FROM;
+  const to = process.env.MERCHANT_ORDER_EMAIL || process.env.SUPPORT_EMAIL;
+  if (!apiKey || !from || !to) throw new Error("Operational email is not configured");
+  const response = await fetch(RESEND_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "Idempotency-Key": `reconcile-${pending._id}`,
+    },
+    body: JSON.stringify({
+      from, to,
+      subject: "Action required: payment reconciliation",
+      text: `A checkout needs manual payment review.\nPending order ID: ${pending._id}\nProvider: ${pending.paymentProvider}\nReason: ${reason}\nDo not create another charge or release reserved stock until provider status is verified.`,
+    }),
+  });
+  if (!response.ok) throw new Error("Operational notification was rejected by Resend");
+  pending.reconciliationAlertSentAt = new Date();
+  await pending.save();
+  return { sent: true };
+};

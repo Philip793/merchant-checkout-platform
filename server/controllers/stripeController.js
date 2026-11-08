@@ -180,7 +180,7 @@ export const releaseExpiredPendingOrders =
  * Ownership comes exclusively from the
  * authenticated user's PendingOrder.
  */
-const finalizePendingOrder = async (
+export const finalizePendingOrder = async (
   pendingOrder,
   paymentIntent,
 ) => {
@@ -207,6 +207,8 @@ const finalizePendingOrder = async (
 
   if (existingOrder) {
     pendingOrder.status = "paid";
+    pendingOrder.paymentState = "succeeded";
+    pendingOrder.paymentCompletedAt = pendingOrder.paymentCompletedAt || new Date();
 
     pendingOrder.finalizedOrderId =
       existingOrder.orderId;
@@ -356,6 +358,8 @@ const finalizePendingOrder = async (
   }
 
   pendingOrder.status = "paid";
+  pendingOrder.paymentState = "succeeded";
+  pendingOrder.paymentCompletedAt = pendingOrder.paymentCompletedAt || new Date();
 
   pendingOrder.inventoryStatus =
     "confirmed";
@@ -535,7 +539,10 @@ export const createCheckoutSession =
           exchangeRateDate: orderSummary.exchangeRateDate,
           shippingOriginal: orderSummary.shippingOriginal,
 
-          customer,
+          customer: {
+            email: req.user.email,
+            name: String(shippingAddress.fullName || req.user.name || "Customer").slice(0, 100),
+          },
 
           shippingAddress: {
             ...shippingAddress,
@@ -672,12 +679,7 @@ export const confirmPayment = async (
       paymentIntentId,
     } = req.body;
 
-    if (
-      !paymentIntentId ||
-      !paymentIntentId.startsWith(
-        "pi_",
-      )
-    ) {
+    if (typeof paymentIntentId !== "string" || !/^pi_[a-zA-Z0-9]+$/.test(paymentIntentId)) {
       return res
         .status(400)
         .json({
@@ -688,21 +690,21 @@ export const confirmPayment = async (
         });
     }
 
-    const paymentIntent =
-      await stripe.paymentIntents.retrieve(
-        paymentIntentId,
-      );
+    // Ownership must be established BEFORE any provider lookup or order mutation.
+    const ownedPendingOrder = await PendingOrder.findOne({
+      stripePaymentIntentId: paymentIntentId,
+      userId: req.user.userId,
+    });
+    if (!ownedPendingOrder) return res.status(404).json({ error: "Checkout not found" });
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     let order = await Order.findOne({
-      "payment.transactionId":
-        paymentIntentId,
+      "payment.transactionId": paymentIntentId,
+      userId: req.user.userId,
     });
 
-    const pendingOrder =
-      await PendingOrder.findOne({
-        stripePaymentIntentId:
-          paymentIntentId,
-      });
+    const pendingOrder = ownedPendingOrder;
 
     if (
       !order &&

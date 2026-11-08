@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import validator from "validator";
 import User from "../models/User.js";
 import LoginAttempt from "../models/LoginAttempt.js";
 
@@ -177,23 +178,21 @@ export const register = async (
       name,
     } = req.body;
 
-    if (
-      !email ||
-      !password ||
-      !name
-    ) {
+    if (typeof email !== "string" || typeof password !== "string" || typeof name !== "string" ||
+        !validator.isEmail(email) || !name.trim() || name.trim().length > 100) {
       return res.status(400).json({
         success: false,
         error:
-          "Email, password, and name are required",
+          "A valid email, password and name are required",
       });
     }
 
-    if (password.length < 6) {
+    if (password.length < 12 || password.length > 128 ||
+        !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password)) {
       return res.status(400).json({
         success: false,
         error:
-          "Password must be at least 6 characters",
+          "Password must be 12–128 characters with uppercase, lowercase and a number",
       });
     }
 

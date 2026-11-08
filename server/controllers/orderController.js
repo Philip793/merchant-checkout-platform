@@ -41,6 +41,15 @@ export const createOrder = async (
 
     return order;
   } catch (error) {
+    // A provider can deliver the same success twice concurrently. The unique
+    // payment transaction index is authoritative; recover the winner.
+    if (error.code === 11000 && orderData.payment?.transactionId) {
+      const existing = await Order.findOne({
+        "payment.transactionId": orderData.payment.transactionId,
+        userId: orderData.userId,
+      });
+      if (existing) return existing;
+    }
     console.error(
       "❌ Failed to save order:",
       error.message,
@@ -76,6 +85,9 @@ export const getOrders = async (
       customerEmail,
     } = req.query;
 
+    const safePage = Math.max(1, Math.min(100000, Number.parseInt(page, 10) || 1));
+    const safeLimit = Math.max(1, Math.min(100, Number.parseInt(limit, 10) || 20));
+
     const filter = {};
 
     if (status) {
@@ -92,9 +104,9 @@ export const getOrders = async (
         .sort({
           createdAt: -1,
         })
-        .limit(limit * 1)
+        .limit(safeLimit)
         .skip(
-          (page - 1) * limit,
+          (safePage - 1) * safeLimit,
         );
 
     const count =
@@ -107,10 +119,10 @@ export const getOrders = async (
 
       totalPages:
         Math.ceil(
-          count / limit,
+          count / safeLimit,
         ),
 
-      currentPage: page,
+      currentPage: safePage,
 
       total: count,
     });

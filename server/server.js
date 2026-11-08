@@ -1,5 +1,6 @@
 // Import dependencies
 import express from "express";
+import mongoose from "mongoose";
 import cors from "cors";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -35,6 +36,7 @@ validateProductCatalog(productCatalog);
 
 // Initialize Express app
 const app = express();
+let initialized = false;
 
 // Connect to MongoDB
 connectDB()
@@ -42,6 +44,7 @@ connectDB()
     // Initialize admin user after DB connection is established
     await initAdmin();
     await initializeInventory();
+    initialized = true;
   })
   .catch((err) => {
     console.error(
@@ -154,31 +157,6 @@ app.use("/create-checkout-session", limiter);
 app.use("/checkout/quote", limiter);
 app.use("/braintree/checkout-with-cart", limiter);
 
-// MongoDB sanitisation.
-//
-// NOTE:
-// We are leaving the middleware ordering unchanged for now
-// because fixing sanitisation order is a separate HIGH-priority
-// issue that we will address later.
-app.use((req, res, next) => {
-  if (req.body) {
-    req.body = mongoSanitize.sanitize(
-      req.body,
-      {
-        replaceWith: "_",
-
-        onSanitize: ({ key }) => {
-          console.warn(
-            `⚠️ Sanitized malicious input: ${key} from ${req.ip}`,
-          );
-        },
-      },
-    );
-  }
-
-  next();
-});
-
 // Prevent HTTP Parameter Pollution
 app.use(
   hpp({
@@ -235,6 +213,15 @@ app.use(
   }),
 );
 
+// Parse first, then sanitize nested MongoDB operators. Stripe's raw webhook
+// endpoint is registered above and remains untouched by this middleware.
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === "object") {
+    req.body = mongoSanitize.sanitize(req.body, { replaceWith: "_" });
+  }
+  next();
+});
+
 // Add a request ID for debugging and audit trails.
 app.use((req, res, next) => {
   req.id =
@@ -279,8 +266,9 @@ app.use(
 app.get(
   "/health",
   (req, res) => {
-    res.send({
-      status: "ok",
+    const ready = initialized && mongoose.connection.readyState === 1;
+    res.status(ready ? 200 : 503).send({
+      status: ready ? "ok" : "unavailable",
       timestamp:
         new Date().toISOString(),
     });
