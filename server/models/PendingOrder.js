@@ -136,6 +136,9 @@ const PendingOrderSchema =
         ],
         default: "AU",
       },
+      exchangeRate: { type: Number },
+      exchangeRateDate: { type: String },
+      shippingOriginal: { type: String },
 
       customer: {
         email: {

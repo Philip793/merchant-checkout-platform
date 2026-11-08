@@ -154,6 +154,20 @@ const clearBraintreeAttempt = () => {
     BRAINTREE_ATTEMPT_STORAGE_KEY,
   );
 };
+const STRIPE_ATTEMPT_STORAGE_KEY = "stripeCheckoutAttempt";
+const getStripeAttempt = (fingerprint) => {
+  try {
+    const prior = JSON.parse(sessionStorage.getItem(STRIPE_ATTEMPT_STORAGE_KEY) || "null");
+    if (prior?.fingerprint === fingerprint && Date.now() - prior.createdAt < 30 * 60 * 1000) {
+      return prior.key;
+    }
+  } catch { /* a stale session is safely replaced */ }
+  const key = `st-${window.crypto.randomUUID()}`;
+  sessionStorage.setItem(STRIPE_ATTEMPT_STORAGE_KEY, JSON.stringify({
+    key, fingerprint, createdAt: Date.now(),
+  }));
+  return key;
+};
 // -----------------------------
 // Stripe Checkout Form Component
 // -----------------------------
@@ -198,7 +212,12 @@ const StripeCheckoutForm = ({ orderSummary, pendingOrderId }) => {
           navigate("/checkout/cancel", { state: { error: error.message } });
         }
       } else if (paymentIntent) {
-        // Payment successful - use the REAL PaymentIntent ID from Stripe
+        if (paymentIntent.status !== "succeeded") {
+          setMessage("Payment is not yet complete. Please wait for confirmation.");
+          setLoading(false);
+          return;
+        }
+        sessionStorage.removeItem(STRIPE_ATTEMPT_STORAGE_KEY);
         console.log("✅ Payment successful with ID:", paymentIntent.id);
         navigate("/checkout/success", {
           state: {
@@ -420,6 +439,12 @@ const createStripePaymentIntent = async () => {
         quantity: item.quantity,
       }));
 
+    const idempotencyKey = getStripeAttempt(buildBraintreeFingerprint({
+      cartItems: cartItemsForBackend,
+      shippingCountry: orderSummary.shippingCountry,
+      shippingAddress: orderSummary.shippingAddress,
+    }));
+
     const response = await fetch(
       `${process.env.REACT_APP_API_URL || "http://localhost:4242"}/create-checkout-session`,
       {
@@ -439,6 +464,8 @@ const createStripePaymentIntent = async () => {
               user?.name,
           },
           shippingAddress: orderSummary.shippingAddress,
+          quoteToken: orderSummary.quoteToken,
+          idempotencyKey,
         }),
       },
     );
@@ -610,6 +637,7 @@ const handleBraintreePurchase =
                * the JWT on the server.
                */
               idempotencyKey,
+              quoteToken: orderSummary.quoteToken,
             }),
           },
         );
@@ -787,8 +815,16 @@ if (!orderSummary) {
                 </div>
                 <div className="flex justify-between text-sm text-gray-600">
                   <span>Shipping</span>
-                  <span>${orderSummary.shipping}</span>
+                  <span>${orderSummary.shipping} AUD</span>
                 </div>
+                {orderSummary.shippingCountry === "US" && (
+                  <div className="rounded bg-blue-50 p-3 text-sm text-gray-700">
+                    US shipping: USD $30, converted to AUD at 1 USD =
+                    {` ${orderSummary.exchangeRate} AUD`}
+                    {orderSummary.exchangeRateDate && ` (published ${orderSummary.exchangeRateDate})`}.
+                    Reference rate provided by Frankfurter. Your bank may charge separate conversion fees.
+                  </div>
+                )}
                 <div className="flex justify-between text-lg font-bold text-gray-800 pt-2 border-t">
                   <span>Total</span>
                   <span>${orderSummary.total} AUD</span>
@@ -806,7 +842,7 @@ if (!orderSummary) {
             {/* Payment Options */}
             <div className="space-y-6">
               {/* PayPal Section */}
-              {braintreeToken && (
+              {braintreeToken && !clientSecret && (
                 <div className="bg-white rounded-lg shadow-md p-6">
                   <h2 className="text-lg font-semibold text-gray-800 mb-4">
                     Pay with PayPal

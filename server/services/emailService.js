@@ -137,6 +137,7 @@ export const sendOrderConfirmationEmail = async (order) => {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "Idempotency-Key": `customer-${order.orderId}`,
     },
     body: JSON.stringify({
       from,
@@ -300,6 +301,7 @@ export const sendMerchantOrderNotificationEmail = async (order) => {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "Idempotency-Key": `merchant-${order.orderId}`,
     },
     body: JSON.stringify({
       from,
@@ -317,4 +319,25 @@ export const sendMerchantOrderNotificationEmail = async (order) => {
   }
 
   return response.json();
+};
+
+export const sendMerchantOrderNotificationEmailOnce = async (order) => {
+  if (order.email?.merchantSentAt) return { skipped: true, reason: "already_sent" };
+  try {
+    await sendMerchantOrderNotificationEmail(order);
+    order.email = {
+      ...(order.email?.toObject?.() || order.email || {}),
+      merchantSentAt: new Date(), merchantError: undefined,
+    };
+    await order.save();
+    return { sent: true };
+  } catch (error) {
+    order.email = {
+      ...(order.email?.toObject?.() || order.email || {}),
+      merchantError: error.message,
+    };
+    await order.save();
+    console.error("Merchant order notification failed:", { orderId: order.orderId, error: error.message });
+    return { sent: false, error: error.message };
+  }
 };

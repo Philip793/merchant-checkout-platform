@@ -48,6 +48,8 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "server": "node server/server.js",
+    "reconcile": "node server/jobs/reconcile.js",
+    "test:checkout": "node --test server/tests/*.test.js",
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"*.js\" \"server/**/*.js\""
   },
   "eslintConfig": {

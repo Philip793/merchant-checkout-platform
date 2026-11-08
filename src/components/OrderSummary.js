@@ -4,12 +4,9 @@ import { useCart } from "../context/CartContext.js";
 import { useAuth } from "../context/AuthContext.js";
 import SEO from "./SEO.js";
 
-const USD_ESTIMATE_RATE = 0.66;
-
-const formatAudWithUsdEstimate = (amount, showUsdEstimate) => {
+const formatAudWithUsdEstimate = (amount) => {
   const aud = `$${amount.toFixed(2)} AUD`;
-  if (!showUsdEstimate) return aud;
-  return `${aud} (~$${(amount * USD_ESTIMATE_RATE).toFixed(2)} USD)`;
+  return aud;
 };
 
 const emptyShippingAddress = {
@@ -30,7 +27,7 @@ const getMissingAddressFields = (address) => {
 
 const OrderSummary = () => {
   const { cart, cartCount } = useCart();
-  const { user, isAuthenticated, updateShippingAddress } =
+  const { user, isAuthenticated, getToken, updateShippingAddress } =
     useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -62,10 +59,9 @@ const OrderSummary = () => {
     (sum, item) => sum + item.price * item.quantity,
     0,
   );
-  const shipping =
-    cart.length > 0 ? (shippingCountry === "US" ? 30.0 : 10.0) : 0;
-  const total = subtotal + shipping;
-  const showUsdEstimate = shippingCountry === "US";
+  // US shipping must be quoted by the backend; do not display a false AUD total.
+  const shipping = shippingCountry === "US" ? null : (cart.length > 0 ? 10 : 0);
+  const total = shipping === null ? null : subtotal + shipping;
 
   // Prepare cart items for backend
   const cartItems = cart.map((item) => ({
@@ -109,23 +105,23 @@ const OrderSummary = () => {
 
     const savedUser = saveAddress.user || user;
 
+    const quoteResponse = await fetch(
+      `${process.env.REACT_APP_API_URL || "http://localhost:4242"}/checkout/quote`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({ cartItems, shippingAddress }),
+      },
+    );
+    const quote = await quoteResponse.json();
+    if (!quoteResponse.ok || !quote.quoteToken) {
+      throw new Error(quote.error || "Unable to calculate the current shipping rate");
+    }
+
     const checkoutOrderSummary = {
-      items: cart.map((item) => ({
-        id: item.id,
-        name: item.name,
-        price: item.price.toFixed(2),
-        quantity: item.quantity,
-        total: (item.price * item.quantity).toFixed(2),
-        sku: item.sku || `SKU-${item.id}`,
-      })),
-
+      ...quote.orderSummary,
       cartItems,
-
-      subtotal: subtotal.toFixed(2),
-      shipping: shipping.toFixed(2),
-      total: total.toFixed(2),
-      currency: "AUD",
-      shippingCountry,
+      quoteToken: quote.quoteToken,
 
       customer: {
         email: savedUser?.email,
@@ -343,8 +339,9 @@ const OrderSummary = () => {
                     />
                   </label>
                   <p className="sm:col-span-2">
-                    Prices are charged in AUD. USD estimates are approximate;
-                    your bank or payment provider may use a different rate.
+                    Prices are charged in AUD. For US shipping, USD $30 is converted
+                    at the current published exchange rate shown on the next checkout screen.
+                    Your bank may apply its own fees.
                   </p>
                 </div>
               </div>
@@ -361,20 +358,20 @@ const OrderSummary = () => {
                   <div className="flex justify-between text-gray-600">
                     <span>Subtotal</span>
                     <span>
-                      {formatAudWithUsdEstimate(subtotal, showUsdEstimate)}
+                      {formatAudWithUsdEstimate(subtotal)}
                     </span>
                   </div>
                   <div className="flex justify-between text-gray-600">
                     <span>Shipping</span>
                     <span>
-                      {formatAudWithUsdEstimate(shipping, showUsdEstimate)}
+                      {shipping === null ? "USD $30 (AUD quote at checkout)" : formatAudWithUsdEstimate(shipping)}
                     </span>
                   </div>
                   <div className="border-t pt-3">
                     <div className="flex justify-between text-lg font-bold text-gray-800">
                       <span>Total</span>
                       <span>
-                        {formatAudWithUsdEstimate(total, showUsdEstimate)}
+                        {total === null ? "Calculated at checkout" : formatAudWithUsdEstimate(total)}
                       </span>
                     </div>
                     <p className="text-xs text-gray-500 mt-1">

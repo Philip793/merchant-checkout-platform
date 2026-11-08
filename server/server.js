@@ -38,27 +38,25 @@ const app = express();
 
 // Connect to MongoDB
 connectDB()
-  .then(() => {
+  .then(async () => {
     // Initialize admin user after DB connection is established
-    initAdmin();
+    await initAdmin();
+    await initializeInventory();
   })
   .catch((err) => {
     console.error(
       "⚠️ Database connection failed:",
       err.message,
     );
+    process.exitCode = 1;
+    if (process.env.NODE_ENV === "production") process.exit(1);
   });
 
 // Initialize inventory from the authoritative product catalogue.
 //
 // The catalogue provides the initial product definitions,
 // while MongoDB remains responsible for live inventory levels.
-initializeInventory().catch((err) => {
-  console.error(
-    "⚠️ Inventory initialization failed:",
-    err.message,
-  );
-});
+// Initialization occurs after MongoDB connects above.
 
 // Trust proxy settings for accurate IP detection behind load balancers.
 //
@@ -152,6 +150,9 @@ const authLimiter = rateLimit({
 
 app.use("/api/", limiter);
 app.use("/auth/", authLimiter);
+app.use("/create-checkout-session", limiter);
+app.use("/checkout/quote", limiter);
+app.use("/braintree/checkout-with-cart", limiter);
 
 // MongoDB sanitisation.
 //
@@ -305,9 +306,7 @@ app.use(
       .json({
         success: false,
 
-        error:
-          err.message ||
-          "Internal server error",
+        error: isDev ? (err.message || "Internal server error") : "Internal server error",
 
         ...(isDev && {
           stack: err.stack,

@@ -1,4 +1,5 @@
 import stripe from "../config/stripe.js";
+import { verifyCheckoutQuote } from "../services/checkoutQuoteService.js";
 import { v4 as uuidv4 } from "uuid";
 import {
   calculateCartTotal,
@@ -19,7 +20,7 @@ import {
 
 import {
   sendOrderConfirmationEmailOnce,
-  sendMerchantOrderNotificationEmail,
+  sendMerchantOrderNotificationEmailOnce,
 } from "../services/emailService.js";
 
 const PENDING_ORDER_TTL_MINUTES = 30;
@@ -91,7 +92,7 @@ const releasePendingInventory =
     return inventoryResult;
   };
 
-const releaseExpiredPendingOrders =
+export const releaseExpiredPendingOrders =
   async () => {
     const expiredOrders =
       await PendingOrder.find({
@@ -123,6 +124,7 @@ const releaseExpiredPendingOrders =
           if (paymentIntent.status === "succeeded") {
             const order = await finalizePendingOrder(pendingOrder, paymentIntent);
             await sendOrderConfirmationEmailOnce(order);
+            await sendMerchantOrderNotificationEmailOnce(order);
             continue;
           }
 
@@ -323,6 +325,9 @@ const finalizePendingOrder = async (
 
       shippingCountry:
         pendingOrder.shippingCountry,
+      exchangeRate: String(pendingOrder.exchangeRate || ""),
+      exchangeRateDate: pendingOrder.exchangeRateDate || "",
+      shippingOriginal: pendingOrder.shippingOriginal || "",
     },
   };
 
@@ -373,6 +378,7 @@ const finalizePendingOrder = async (
 export const createCheckoutSession =
   async (req, res) => {
     let pendingOrder = null;
+    let createdPaymentIntentId = null;
 
     let reservedItems = [];
     const reservationId = uuidv4();
@@ -401,7 +407,13 @@ export const createCheckoutSession =
   cartItems,
   customer = {},
   shippingAddress = {},
+  quoteToken,
+  idempotencyKey,
 } = req.body;
+
+      if (typeof idempotencyKey !== "string" || !/^st-[a-zA-Z0-9-]{20,190}$/.test(idempotencyKey)) {
+        return res.status(400).json({ error: "A valid Stripe checkout attempt ID is required" });
+      }
 
       if (
         !cartItems ||
@@ -418,13 +430,37 @@ export const createCheckoutSession =
 
       await releaseExpiredPendingOrders();
 
-      const orderSummary =
-  calculateCartTotal(
-    cartItems,
-    {
-      shippingAddress,
-    },
-  );
+      const prior = await PendingOrder.findOne({
+        userId: authenticatedUserId,
+        paymentProvider: "stripe",
+        idempotencyKey,
+      });
+      if (prior) {
+        if (prior.status === "pending" && prior.expiresAt > new Date() && prior.stripePaymentIntentId) {
+          const oldIntent = await stripe.paymentIntents.retrieve(prior.stripePaymentIntentId);
+          if (["requires_payment_method", "requires_confirmation", "requires_action"].includes(oldIntent.status)) {
+            return res.json({
+              clientSecret: oldIntent.client_secret,
+              paymentIntentId: oldIntent.id,
+              pendingOrderId: prior._id.toString(),
+              orderSummary: {
+                items: prior.items.map((i) => ({ id: i.productId, name: i.name, price: i.price,
+                  quantity: i.quantity, total: (i.price * i.quantity).toFixed(2), sku: i.sku })),
+                subtotal: prior.subtotal.toFixed(2), shipping: prior.shipping.toFixed(2),
+                total: prior.total.toFixed(2), currency: "AUD", shippingCountry: prior.shippingCountry,
+                exchangeRate: prior.exchangeRate, exchangeRateDate: prior.exchangeRateDate,
+                shippingOriginal: prior.shippingOriginal,
+              },
+              reused: true,
+            });
+          }
+        }
+        return res.status(409).json({ error: "This checkout attempt was already processed or expired. Please start a fresh checkout." });
+      }
+
+      const orderSummary = verifyCheckoutQuote({
+        quoteToken, cartItems, shippingAddress, userId: authenticatedUserId,
+      });
 
       const inventoryItems =
         orderSummary.items.map(
@@ -468,6 +504,9 @@ export const createCheckoutSession =
           userId:
             authenticatedUserId,
 
+          paymentProvider: "stripe",
+          idempotencyKey,
+
           items:
             buildPendingOrderItems(
               orderSummary,
@@ -492,6 +531,9 @@ export const createCheckoutSession =
 
           shippingCountry:
             orderSummary.shippingCountry,
+          exchangeRate: orderSummary.exchangeRate,
+          exchangeRateDate: orderSummary.exchangeRateDate,
+          shippingOriginal: orderSummary.shippingOriginal,
 
           customer,
 
@@ -532,7 +574,9 @@ export const createCheckoutSession =
                 orderSummary.shippingCountry,
             },
           },
+          { idempotencyKey: `stripe-${pendingOrder._id.toString()}` },
         );
+      createdPaymentIntentId = paymentIntent.id;
 
       pendingOrder.stripePaymentIntentId =
         paymentIntent.id;
@@ -556,6 +600,18 @@ export const createCheckoutSession =
         "Checkout error:",
         err,
       );
+
+      if (createdPaymentIntentId) {
+        try {
+          const cancelled = await stripe.paymentIntents.cancel(createdPaymentIntentId);
+          if (cancelled.status !== "canceled") throw new Error("Stripe cancellation not confirmed");
+        } catch (cancelError) {
+          console.error("Checkout payment intent needs manual reconciliation", {
+            paymentIntentId: createdPaymentIntentId, error: cancelError.message,
+          });
+          return res.status(503).json({ error: "Checkout status is uncertain. Do not retry payment; contact support." });
+        }
+      }
 
       if (
         pendingOrder?.inventoryStatus ===
@@ -665,7 +721,7 @@ export const confirmPayment = async (
       );
 
       try {
-        await sendMerchantOrderNotificationEmail(
+        await sendMerchantOrderNotificationEmailOnce(
           order,
         );
       } catch (emailError) {
@@ -810,6 +866,7 @@ export const handleStripeWebhook =
           await sendOrderConfirmationEmailOnce(
             order,
           );
+          await sendMerchantOrderNotificationEmailOnce(order);
 
           return res.json({
             received: true,
@@ -819,13 +876,28 @@ export const handleStripeWebhook =
           });
         }
 
-        pendingOrder.status =
-          "failed";
-
-        await releasePendingInventory(
-          pendingOrder,
-        );
-
+        // A failed card attempt can leave a reusable PaymentIntent.
+        // Do NOT return stock to inventory until the intent cannot later succeed.
+        if (pendingOrder.status === "paid") return res.json({ received: true });
+        const latestIntent = await stripe.paymentIntents.retrieve(paymentIntent.id);
+        if (latestIntent.status === "succeeded") {
+          const order = await finalizePendingOrder(pendingOrder, latestIntent);
+          await sendOrderConfirmationEmailOnce(order);
+          await sendMerchantOrderNotificationEmailOnce(order);
+          return res.json({ received: true });
+        }
+        if (latestIntent.status !== "canceled") {
+          if (!["requires_payment_method", "requires_confirmation", "requires_action"].includes(latestIntent.status)) {
+            console.error("Stripe failure needs reconciliation", { paymentIntentId: paymentIntent.id, status: latestIntent.status });
+            return res.status(503).json({ error: "Payment state needs reconciliation" });
+          }
+          const cancelled = await stripe.paymentIntents.cancel(latestIntent.id);
+          if (cancelled.status !== "canceled") throw new Error("Stripe cancellation not confirmed");
+        }
+        const releaseResult = await releasePendingInventory(pendingOrder);
+        if (!releaseResult.success) throw new Error("Failed to release inventory after Stripe failure");
+        pendingOrder.status = "failed";
+        pendingOrder.paymentState = "failed";
         await pendingOrder.save();
 
         return res.json({

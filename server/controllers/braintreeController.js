@@ -1,9 +1,10 @@
 import gateway from "../config/braintree.js";
+import { verifyCheckoutQuote } from "../services/checkoutQuoteService.js";
 import { v4 as uuidv4 } from "uuid";
 
 import {
   sendOrderConfirmationEmailOnce,
-  sendMerchantOrderNotificationEmail,
+  sendMerchantOrderNotificationEmailOnce,
 } from "../services/emailService.js";
 
 import {
@@ -285,6 +286,10 @@ const finalizeBraintreePendingOrder =
           pendingOrder
             .shippingCountry,
 
+        exchangeRate: String(pendingOrder.exchangeRate || ""),
+        exchangeRateDate: pendingOrder.exchangeRateDate || "",
+        shippingOriginal: pendingOrder.shippingOriginal || "",
+
         braintreeTransactionId:
           pendingOrder
             .braintreeTransactionId,
@@ -462,6 +467,7 @@ const {
   customer = {},
   shippingAddress = {},
   idempotencyKey,
+  quoteToken,
 } = req.body;
 
       /*
@@ -630,9 +636,9 @@ const {
             order,
           );
 
-          if (created) {
+          {
             try {
-              await sendMerchantOrderNotificationEmail(
+              await sendMerchantOrderNotificationEmailOnce(
                 order,
               );
             } catch (emailError) {
@@ -770,13 +776,9 @@ const {
       /*
        * Server-authoritative product prices.
        */
-const orderSummary =
-  calculateCartTotal(
-    cartItems,
-    {
-      shippingAddress,
-    },
-  );
+const orderSummary = verifyCheckoutQuote({
+  quoteToken, cartItems, shippingAddress, userId: authenticatedUserId,
+});
 
       const inventoryItems =
         orderSummary.items.map(
@@ -876,6 +878,9 @@ const orderSummary =
               shippingCountry:
                 orderSummary
                   .shippingCountry,
+              exchangeRate: orderSummary.exchangeRate,
+              exchangeRateDate: orderSummary.exchangeRateDate,
+              shippingOriginal: orderSummary.shippingOriginal,
 
               customer:
                 safeCustomer,
@@ -1085,9 +1090,9 @@ const orderSummary =
         order,
       );
 
-      if (created) {
+      {
         try {
-          await sendMerchantOrderNotificationEmail(
+          await sendMerchantOrderNotificationEmailOnce(
             order,
           );
         } catch (emailError) {

@@ -1,4 +1,5 @@
 import express from "express";
+import { createCheckoutQuote } from "../services/checkoutQuoteService.js";
 import {
   createCheckoutSession,
   confirmPayment,
@@ -26,6 +27,19 @@ import {
 } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+
+router.post("/checkout/quote", authenticate, async (req, res) => {
+  try {
+    const result = await createCheckoutQuote({
+      cartItems: req.body.cartItems,
+      shippingAddress: req.body.shippingAddress,
+      userId: req.user.userId,
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 // Auth routes
 router.post("/auth/register", register);

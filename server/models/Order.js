@@ -138,6 +138,8 @@ const OrderSchema = new mongoose.Schema(
         type: String,
         trim: true,
       },
+      merchantSentAt: { type: Date },
+      merchantError: { type: String, trim: true },
     },
 
     status: {

@@ -400,18 +400,18 @@ export const productList = Object.freeze(
  * @returns {Object|null}
  */
 export const getCatalogProductById = (id) => {
-  const productId = Number.parseInt(id, 10);
+  const productId = Number(id);
 
   return Number.isInteger(productId)
     ? productCatalog[productId] || null
     : null;
 };
 
-// Shipping costs in AUD cents.
+// Australian shipping is AUD 10; US shipping is USD 30, converted
+// at checkout and charged in AUD.
 
 const SHIPPING_RATES = {
   AU: 1000, // $10.00 AUD
-  US: 3000, // $30.00 AUD
 };
 
 /*
@@ -485,17 +485,19 @@ export const getShippingCountryFromAddress =
     );
   };
 
-export const getShippingCostCents = (
-  country,
-) => {
+export const getShippingCostCents = (country, usdToAudRate) => {
   const normalizedCountry =
     normalizeShippingCountry(
       country,
     );
 
-  return SHIPPING_RATES[
-    normalizedCountry
-  ];
+  if (normalizedCountry === "US") {
+    if (!Number.isFinite(usdToAudRate) || usdToAudRate <= 0) {
+      throw new Error("A valid USD/AUD exchange rate is required for US shipping");
+    }
+    return Math.round(3000 * usdToAudRate);
+  }
+  return SHIPPING_RATES[normalizedCountry];
 };
 
 /**
@@ -548,13 +550,10 @@ export const calculateCartTotal = (
       );
     }
 
-    const quantity = Math.max(
-      1,
-      Number.parseInt(
-        item.quantity,
-        10,
-      ) || 1,
-    );
+    const quantity = Number(item.quantity);
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100) {
+      throw new Error("Quantity must be a whole number between 1 and 100");
+    }
 
     const unitPriceCents = Math.round(
       product.price * 100,
@@ -578,9 +577,7 @@ export const calculateCartTotal = (
   }
 
   const shippingCost =
-    getShippingCostCents(
-      shippingCountry,
-    );
+    getShippingCostCents(shippingCountry, options.usdToAudRate);
 
   const total =
     subtotal + shippingCost;
@@ -603,6 +600,11 @@ export const calculateCartTotal = (
     currency: "AUD",
 
     shippingCountry,
+
+    shippingOriginal: shippingCountry === "US" ? "30.00 USD" : "10.00 AUD",
+    exchangeRate: shippingCountry === "US" ? options.usdToAudRate : null,
+    exchangeRateDate: shippingCountry === "US" ? options.exchangeRateDate : null,
+    exchangeRateSource: shippingCountry === "US" ? "Frankfurter" : null,
 
     items: validatedItems,
   };
